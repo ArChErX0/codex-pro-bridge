@@ -232,6 +232,7 @@ class ProjectSourceManager:
         max_project_files: int = 0,
         max_source_bytes: int = DEFAULT_MAX_SOURCE_BYTES,
         allow_secret_like_content: bool = False,
+        freeze_unlisted: bool = True,
     ) -> tuple[Dict[str, Any], Path]:
         project = self.store.load_project(project_id)
         project_id = project["bridge_project_id"]
@@ -257,19 +258,27 @@ class ProjectSourceManager:
             if isinstance(item, Mapping) and item.get("source_id")
         }
 
-        desired_values = [project["brief_path"]]
-        desired_values.extend(
-            str(item.get("local_path"))
-            for item in existing_sources.values()
-            if item.get("local_path")
-        )
-        desired_values.extend(source_paths)
-        desired_values = list(dict.fromkeys(value for value in desired_values if value))
+        # Freeze-by-default: only explicitly listed sources are "live" (re-hashed
+        # and possibly uploaded/replaced). Every other already-synced source is
+        # carried forward verbatim so a local edit never triggers an unrequested
+        # upload or replacement. --all restores the full-scan behavior.
+        explicit_values = list(dict.fromkeys(value for value in source_paths if value))
+        if freeze_unlisted:
+            live_values = explicit_values
+        else:
+            live_values = [project["brief_path"]]
+            live_values.extend(
+                str(item.get("local_path"))
+                for item in existing_sources.values()
+                if item.get("local_path")
+            )
+            live_values.extend(explicit_values)
+            live_values = list(dict.fromkeys(value for value in live_values if value))
 
         project_dir = self.store.project_dir(project_id)
         default_internal_brief = (project_dir / "PROJECT_BRIEF.md").resolve()
         desired: List[Dict[str, Any]] = []
-        for value in desired_values:
+        for value in live_values:
             path = resolve_repo_path(value, self.repo)
             if not path.is_file():
                 raise BridgeError(f"Project Source must be a file: {value}")
@@ -310,6 +319,25 @@ class ProjectSourceManager:
                     "size_bytes": path.stat().st_size,
                     "ownership": "bridge_managed",
                     "previous_remote_name": previous.get("remote_name", ""),
+                }
+            )
+
+        # Carry forward every already-synced source that was not explicitly
+        # listed. These are frozen: not re-hashed, not uploaded, not removed.
+        live_source_ids = {source["source_id"] for source in desired}
+        frozen_sources: List[Dict[str, Any]] = []
+        for source_id, item in existing_sources.items():
+            if source_id in live_source_ids or not item.get("remote_name"):
+                continue
+            frozen_sources.append(
+                {
+                    "source_id": source_id,
+                    "role": str(item.get("role", "")) or "reference",
+                    "local_path": str(item.get("local_path", "")),
+                    "remote_name": str(item.get("remote_name", "")),
+                    "sha256": str(item.get("sha256", "")),
+                    "size_bytes": int(item.get("size_bytes", 0) or 0),
+                    "ownership": "bridge_managed",
                 }
             )
 
@@ -356,6 +384,12 @@ class ProjectSourceManager:
                 )
                 removal_names.add(previous_name)
 
+        # Frozen sources are already remote; they are reused verbatim and never
+        # uploaded or removed. They still count as desired so record() keeps them.
+        for source in frozen_sources:
+            reused.append(source)
+        all_desired = desired + frozen_sources
+
         remote_count = len(inventory)
         temporary_peak = remote_count + len(uploads)
         final_count = temporary_peak - len(removals)
@@ -393,12 +427,15 @@ class ProjectSourceManager:
             "sync_mode": binding["sync_mode"],
             "created_at": now_iso(),
             "capacity": capacity,
+            "freeze_unlisted": freeze_unlisted,
             "remote_count_before": remote_count,
             "temporary_peak": temporary_peak,
             "remote_count_after": final_count,
             "ready": not blockers,
             "blockers": blockers,
-            "desired_sources": desired,
+            "desired_sources": all_desired,
+            "live_sources": desired,
+            "frozen_sources": frozen_sources,
             "uploads": staged_uploads if not blockers else uploads,
             "reuse": reused,
             "removals_after_upload": removals,
@@ -522,16 +559,35 @@ class ProjectSourceManager:
             raise BridgeError("A Project Source plan may never remove user-managed files")
 
         now = now_iso()
+        frozen_ids = {
+            str(item.get("source_id", ""))
+            for item in plan.get("frozen_sources", [])
+            if item.get("source_id")
+        }
         sources: List[Dict[str, Any]] = []
         for desired in plan.get("desired_sources", []):
             remote_name = str(desired["remote_name"])
-            status = (
-                "failed"
-                if remote_name in failed
-                else "synced"
-                if remote_name in present
-                else "pending"
-            )
+            if str(desired.get("source_id", "")) in frozen_ids:
+                # Frozen: not uploaded this round. Its status follows the observed
+                # remote inventory, not the upload result, so an unrelated freeze
+                # never regresses to pending or blocks routing.
+                if remote_name in failed:
+                    status = "failed"
+                elif (
+                    remote_name in inventory_by_name
+                    and inventory_by_name[remote_name].get("ownership") == "bridge_managed"
+                ):
+                    status = "synced"
+                else:
+                    status = "missing"
+            else:
+                status = (
+                    "failed"
+                    if remote_name in failed
+                    else "synced"
+                    if remote_name in present
+                    else "pending"
+                )
             sources.append(
                 {
                     "source_id": desired["source_id"],

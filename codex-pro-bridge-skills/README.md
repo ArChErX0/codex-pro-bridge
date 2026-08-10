@@ -18,7 +18,7 @@ Repository-local installation:
 ./install.sh --repo /path/to/repo
 ```
 
-The installer replaces only the eight managed skills and `.shared`. Repository-local installation also adds `.agents/` and `.codex/` to the target repository's local `.git/info/exclude`.
+The installer replaces only the nine managed skills and `.shared`. Repository-local installation also adds `.agents/` and `.codex/` to the target repository's local `.git/info/exclude`.
 
 ## Entry points
 
@@ -26,6 +26,7 @@ The installer replaces only the eight managed skills and `.shared`. Repository-l
 | --- | --- |
 | Bind, inspect, route, or repair a ChatGPT Project | `$gpt-pro-project-workspace` |
 | Normal question or existing conversation | `$gpt-pro-question-window` |
+| High-frequency / parallel review of one idea, proposal, or atomic task | `$gpt-pro-review-probe` |
 | Deep algorithm, pipeline, or experiment review | `$gpt-pro-research-algorithm-reviewer` |
 | Paper framing and reviewer pressure test | `$gpt-pro-paper-brainstormer` |
 | Complete external-review loop | `$gpt-pro-algorithm-pipeline` |

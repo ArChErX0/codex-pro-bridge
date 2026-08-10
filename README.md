@@ -54,6 +54,8 @@ The workflow is:
 5. Codex saves the complete answer, summarizes it, and verifies actionable claims locally.
 6. The same task continues into implementation, experiments, or another focused review round.
 
+On Codex desktop, the bridge releases the browser after Send and follows the exact ChatGPT conversation and turn through native reads when available. An optional one-shot heartbeat stays quiet while pending and is cleaned up on completion, failure, or timeout; truncated native output falls back to a newly leased browser capture of the same turn.
+
 ```mermaid
 sequenceDiagram
   participant C as Codex
@@ -267,6 +269,7 @@ More examples are available in [examples/usage_prompts.md](codex-pro-bridge-skil
 | --- | --- |
 | `gpt-pro-project-workspace` | Bind, route, synchronize, inspect, and repair Project-aware work |
 | `gpt-pro-question-window` | Ask a normal question or continue an existing external review |
+| `gpt-pro-review-probe` | Fast lane for high-frequency, fine-grained, parallel standalone review of one idea, proposal, or atomic task |
 | `bundle-algorithm-context` | Build a scoped evidence package for a source-backed round |
 | `gpt-pro-research-algorithm-reviewer` | Review algorithms, pipelines, experiments, and research claims |
 | `gpt-pro-paper-brainstormer` | Develop paper framing, novelty, objections, and experiment story |

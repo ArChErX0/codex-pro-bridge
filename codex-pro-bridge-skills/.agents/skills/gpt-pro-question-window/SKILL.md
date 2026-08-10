@@ -17,15 +17,17 @@ Before creating or resuming bridge state, read [references/bridge_protocol.md](r
 4. For Project mode, open the exact saved Project URL and visibly verify the Project ID, account/workspace, active binding, and current source inventory before creating or reusing the conversation. Reconcile the observed inventory locally. Never choose by title alone.
 5. Open ChatGPT in the user's signed-in Chrome session. Ask the user to handle login, passwords, 2FA, CAPTCHA, rate limits, or account-security prompts.
 6. Upload a focused Task Bundle when evidence is needed. A Task Bundle is not a Project Source. Never replace a failed upload with a full repository paste unless the user explicitly approves that fallback.
-7. Read the exact selected model label, visible attachment name, and Project identity when applicable. Run `scripts/check_browser_preflight.py` before clicking Send. If the requested model is `Pro`, labels such as `极高` or an account name containing “Pro” do not satisfy the gate.
-8. Wait until the response visibly finishes. Keep one submission active, report periodic progress during long waits, and never resend while generation is still active.
-9. Immediately capture the prompt, bundle digest, full raw answer, Project identity, model labels, attachment name, upload route, and observed timing with `scripts/save_bridge_turn.py`.
-10. Re-open local evidence, verify the answer, and record the result separately with `scripts/record_codex_verdict.py`.
-11. Run `scripts/verify_bridge_thread.py --require-complete-rounds` and, for
+7. Read the exact selected model label, visible attachment name, and Project identity when applicable. Acquire the host-local browser lease; before Send, record the stable conversation ID, existing turn IDs or cursor, and prompt digest as the pre-submit boundary. Run `scripts/check_browser_preflight.py`. If the requested model is `Pro`, labels such as `极高` or an account name containing “Pro” do not satisfy the gate.
+8. Click Send once. After ChatGPT visibly accepts the prompt, record the submission time and target turn ID when available, then release the browser lease immediately. Do not hold it while the remote model generates.
+9. Prefer Codex's native `read_thread` on that exact ChatGPT conversation. Match the new user turn after the saved boundary, pin its remote turn ID, and accept only its completed, untruncated assistant reply. Never capture whichever turn merely happens to be latest.
+10. If the native read is unavailable, ambiguous, or marked `truncated`, reacquire the browser lease only for a full browser capture of the already pinned target turn, pass the same remote turn ID to persistence, and release the lease afterward. A scheduled heartbeat may poll `read_thread`; it must stay quiet on no change and delete itself after capture, explicit failure, or timeout.
+11. Capture the prompt, bundle digest, full raw answer, target remote turn ID, capture route, Project identity, model labels, attachment name, upload route, and observed timing with `scripts/save_bridge_turn.py`.
+12. Re-open local evidence, verify the answer, and record the result separately with `scripts/record_codex_verdict.py`.
+13. Run `scripts/verify_bridge_thread.py --require-complete-rounds` and, for
     Project mode, run
     `../gpt-pro-project-workspace/scripts/verify_bridge_project.py` with
     `--require-active-binding` before a follow-up round or final handoff.
-12. Report the chosen route, saved turn and verdict paths, useful conclusions, rejected claims, and next action.
+14. Report the chosen route, saved turn and verdict paths, useful conclusions, rejected claims, and next action.
 
 Completion criterion: the raw exchange and Codex verdict are separate immutable artifacts on the same thread, and every acted-on GPT Pro claim has a local verdict.
 
@@ -51,11 +53,16 @@ Before submission, run:
 
 ```bash
 python3 .agents/skills/gpt-pro-question-window/scripts/check_browser_preflight.py \
+  --repo . \
+  --bridge-thread-id '<bridge-thread-id>' \
+  --browser-lease-token '<lease-token>' \
   --requested-model Pro \
   --selected-ui-label '<exact visible label>' \
   --bundle /absolute/path/to/bundle.zip \
   --attachment-name '<visible filename>' \
-  --upload-control visible-menu
+  --upload-control visible-menu \
+  --expected-conversation-id '<reserved chat id>' \
+  --observed-conversation-id '<visible chat id>'
 ```
 
 For a Project-bound round, also pass the exact values returned by routing and
@@ -78,7 +85,9 @@ Treat attachment preprocessing that stalls before submission as a bundle-shape p
 ## Browser pacing
 
 - Prefer one conversation per Bridge Thread. Independent deliverables receive independent Threads and conversations; never use the same Bridge Thread concurrently.
-- Wait for visible completion between upload, submit, streaming, and copy operations. During a long generation, inspect at roughly 30–60 second intervals and send concise progress updates at least once per minute.
+- Serialize only browser-mutating critical sections: attach/upload/preflight/Send and any browser fallback capture. Release the browser lease after each section; remote generations may overlap.
+- Use bounded native reads for an immediate wait. If a later wake-up is useful, create one heartbeat watcher for the current task, retain its automation ID, and poll only the exact ChatGPT conversation. Delete the watcher on captured success, explicit failure, or timeout; do not resubmit.
+- Treat any `truncated: true`, incomplete status, missing target turn, or multiple plausible new turns as non-capturable. Reacquire the browser only when the full raw answer cannot be obtained natively.
 - Distinguish `submitted`, `generation observed`, `response complete`, `captured`, and `failed`. Record observed timestamps; do not invent missing ones.
 - If progress disappears, capture diagnostics and mark the attempt failed. Do not automatically resubmit the prompt.
 - Inspect after failure; avoid rapid retries, scraping, or burst submission.

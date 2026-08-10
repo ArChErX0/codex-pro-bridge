@@ -12,13 +12,25 @@ from pathlib import Path
 SHARED_DIR = Path(__file__).resolve().parents[2] / ".shared"
 sys.path.insert(0, str(SHARED_DIR))
 
-from bridge_store import BridgeError, file_sha256, now_iso  # noqa: E402
+from bridge_store import (  # noqa: E402
+    BridgeError,
+    assert_browser_lease_held,
+    file_sha256,
+    now_iso,
+)
 from project_store import REMOTE_PROJECT_ID_RE  # noqa: E402
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Verify exact visible model and attachment state before browser submission."
+    )
+    parser.add_argument("--repo", default=".")
+    parser.add_argument("--bridge-thread-id", default="")
+    parser.add_argument(
+        "--browser-lease-token",
+        default="",
+        help="Optional token from manage_browser_lease.py; verified before Send.",
     )
     parser.add_argument("--requested-model", required=True)
     parser.add_argument("--selected-ui-label", required=True)
@@ -32,6 +44,16 @@ def main() -> int:
     parser.add_argument("--expected-account-label", default="")
     parser.add_argument("--observed-account-label", default="")
     parser.add_argument("--binding-status", default="")
+    parser.add_argument(
+        "--expected-conversation-id",
+        default="",
+        help="Canonical conversation id reserved for this thread's probe.",
+    )
+    parser.add_argument(
+        "--observed-conversation-id",
+        default="",
+        help="Conversation id currently visible in the browser before Send.",
+    )
     args = parser.parse_args()
 
     try:
@@ -113,6 +135,52 @@ def main() -> int:
                 "Standalone submission cannot include Project binding observations"
             )
 
+        expected_conversation_id = args.expected_conversation_id.strip()
+        observed_conversation_id = args.observed_conversation_id.strip()
+        conversation_verification = "not-required"
+        if expected_conversation_id:
+            if not observed_conversation_id:
+                raise BridgeError(
+                    "--observed-conversation-id is required when a conversation is reserved"
+                )
+            if observed_conversation_id != expected_conversation_id:
+                raise BridgeError(
+                    f"Observed conversation {observed_conversation_id!r} does not match "
+                    f"the reserved conversation {expected_conversation_id!r}; the browser "
+                    "is on the wrong chat"
+                )
+            conversation_verification = "verified"
+        elif observed_conversation_id:
+            raise BridgeError(
+                "--observed-conversation-id requires --expected-conversation-id"
+            )
+
+        browser_lease_verification = "not-provided"
+        browser_lease_thread_id = ""
+        if args.browser_lease_token:
+            repo = Path(args.repo).resolve()
+            if not repo.is_dir():
+                raise BridgeError(f"Repository root is not a directory: {repo}")
+            lease = assert_browser_lease_held(repo, token=args.browser_lease_token)
+            browser_lease_thread_id = str(lease.get("thread_id", ""))
+            expected_thread_id = args.bridge_thread_id.strip()
+            if expected_thread_id and browser_lease_thread_id != expected_thread_id:
+                raise BridgeError(
+                    f"Browser lease belongs to thread {browser_lease_thread_id or '<none>'!r}, "
+                    f"not {expected_thread_id!r}"
+                )
+            lease_conversation_id = str(lease.get("expected_conversation_id", ""))
+            if lease_conversation_id and lease_conversation_id != expected_conversation_id:
+                raise BridgeError(
+                    "Browser lease conversation does not match the preflight conversation"
+                )
+            lease_project_id = str(lease.get("expected_remote_project_id", ""))
+            if lease_project_id and lease_project_id != expected_project_id:
+                raise BridgeError(
+                    "Browser lease Project does not match the preflight Project"
+                )
+            browser_lease_verification = "verified"
+
         print(
             json.dumps(
                 {
@@ -133,6 +201,11 @@ def main() -> int:
                     "observed_account_label": observed_account_label,
                     "project_verification": project_verification,
                     "binding_status": binding_status,
+                    "expected_conversation_id": expected_conversation_id,
+                    "observed_conversation_id": observed_conversation_id,
+                    "conversation_verification": conversation_verification,
+                    "browser_lease_thread_id": browser_lease_thread_id,
+                    "browser_lease_verification": browser_lease_verification,
                 },
                 ensure_ascii=False,
                 sort_keys=True,

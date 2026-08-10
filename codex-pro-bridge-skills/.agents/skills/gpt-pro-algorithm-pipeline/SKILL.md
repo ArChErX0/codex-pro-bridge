@@ -21,7 +21,7 @@ Read the canonical state and lifecycle rules at [../gpt-pro-question-window/refe
    - `$gpt-pro-research-algorithm-reviewer` for algorithm, pipeline, and experiment critique.
    - `$gpt-pro-paper-brainstormer` for paper framing.
    - `$gpt-pro-question-window` for a normal question.
-5. Use `$gpt-pro-question-window` to upload through a visible control, verify the attachment, gate the exact requested model with `check_browser_preflight.py`, send once, wait through visible completion, and capture the full raw exchange plus browser provenance on the same `bridge-thread-id`.
+5. Use `$gpt-pro-question-window` to upload through a visible control, verify the attachment, gate the exact requested model, send once, release the browser, and follow its native-response handoff and fallback rules to capture the full raw exchange on the same `bridge-thread-id`.
 6. Re-open the repository evidence and classify every actionable claim as verified, partially verified, unsupported, or inapplicable.
 7. Record that result as a separate `codex-verdict` event before implementing it.
 8. Use `$experiment-plan-generator` when empirical evidence is required. Prefer the cheapest sanity or kill experiment before expensive work.

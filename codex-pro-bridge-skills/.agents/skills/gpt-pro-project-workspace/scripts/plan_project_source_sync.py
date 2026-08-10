@@ -30,7 +30,22 @@ def main() -> int:
     )
     parser.add_argument("--repo", default=".")
     parser.add_argument("--bridge-project-id", default="")
-    parser.add_argument("--source", action="append", default=[])
+    parser.add_argument(
+        "--source",
+        "--only",
+        dest="source",
+        action="append",
+        default=[],
+        help="Explicit source path to push this round. Only listed sources are "
+        "re-hashed and (if changed) uploaded/replaced; all other already-synced "
+        "sources are frozen at their confirmed remote version.",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Re-scan every known source (brief + all prior sources) instead of "
+        "freezing unlisted ones. Restores the pre-freeze behavior.",
+    )
     parser.add_argument(
         "--role",
         action="append",
@@ -65,6 +80,7 @@ def main() -> int:
             max_project_files=args.max_project_files,
             max_source_bytes=args.max_source_bytes,
             allow_secret_like_content=args.allow_secret_like_content,
+            freeze_unlisted=not args.all,
         )
         print(
             json.dumps(

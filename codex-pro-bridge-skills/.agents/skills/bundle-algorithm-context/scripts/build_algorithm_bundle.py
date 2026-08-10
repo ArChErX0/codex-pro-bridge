@@ -420,6 +420,15 @@ def main() -> int:
         default="",
         help="Optional parent Bridge Project. Defaults from the Codex session.",
     )
+    parser.add_argument(
+        "--standalone",
+        action="store_true",
+        help=(
+            "Fast lane for high-frequency Review Probes: build a scoped bundle "
+            "with no Bridge Project. Skips all Project source-sync gating. Fails "
+            "if the thread is attached to a Project."
+        ),
+    )
     parser.add_argument("--codex-session-id", default="", help="Defaults to <bridge-thread-id>-codex.")
     parser.add_argument("--goal", required=True, help="User goal.")
     parser.add_argument("--question", default="", help="Question for GPT Pro.")
@@ -475,6 +484,8 @@ def main() -> int:
             raise BridgeError("--repo-context explicit requires --include")
         if args.allow_external_include and args.repo_context != "explicit":
             raise BridgeError("--allow-external-include requires --repo-context explicit")
+        if args.standalone and args.bridge_project_id:
+            raise BridgeError("--standalone cannot be combined with --bridge-project-id")
 
         thread_id = validate_id(args.bridge_thread_id, "bridge thread id")
         codex_session_id = validate_id(
@@ -491,11 +502,18 @@ def main() -> int:
             )
         project_store = BridgeProjectStore(root)
         bridge_project_id = (
-            args.bridge_project_id
+            ""
+            if args.standalone
+            else args.bridge_project_id
             or session_meta.get("bridge_project_id", "")
             or project_store.project_for_thread(thread_id)
         )
         project_context = ""
+        if args.standalone and project_store.project_for_thread(thread_id):
+            raise BridgeError(
+                f"--standalone requires an unattached thread, but {thread_id} is "
+                "attached to a Bridge Project; open a fresh probe thread id"
+            )
         if bridge_project_id:
             bridge_project_id = project_store.resolve_project_id(bridge_project_id)
             if session_meta.get("bridge_project_id") not in (

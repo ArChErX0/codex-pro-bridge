@@ -119,6 +119,20 @@ requires confirmation, create, bind, or verify the Project first. Do not
 silently fall back to standalone when this repository already has a Bridge
 Project with a stale or unverified binding.
 
+Exit codes: `0` = ready (attached or clean), `3` = needs human confirmation
+(the printed JSON lists `requires_confirmation`), `2` = bad invocation.
+Treat `3`, not `2`, as the confirmation signal.
+
+### High-frequency Review Probes
+
+For repeated, fine-grained, parallel review of one idea, proposal, or atomic
+sub-task, use standalone Review Probes instead of Project rounds. A probe never
+attaches to a Bridge Project, so it never consults Project source-sync and is
+never blocked when unrelated shared sources are stale. See
+[../../gpt-pro-review-probe/SKILL.md](../../gpt-pro-review-probe/SKILL.md). Many
+probes run in parallel because each is a distinct thread with its own ledger;
+only browser-mutating windows are serialized by the browser lease.
+
 ### 1. Snapshot
 
 Write current notes and an immutable snapshot:
@@ -163,12 +177,23 @@ For `auto`, use any `--include` paths as required focus seeds, close their defin
 After the visible attachment chip and exact selected model label are observable, gate submission:
 
 ```bash
+python3 .agents/skills/gpt-pro-question-window/scripts/manage_browser_lease.py \
+  --repo . acquire \
+  --holder '<worker-id>' \
+  --bridge-thread-id '<thread-id>' \
+  --expected-conversation-id '<reserved chat id>'
+
 python3 .agents/skills/gpt-pro-question-window/scripts/check_browser_preflight.py \
+  --repo . \
+  --bridge-thread-id '<thread-id>' \
+  --browser-lease-token '<token returned above>' \
   --requested-model Pro \
   --selected-ui-label '<exact visible label>' \
   --bundle /absolute/path/to/bundle.zip \
   --attachment-name '<visible filename>' \
-  --upload-control visible-menu
+  --upload-control visible-menu \
+  --expected-conversation-id '<reserved chat id>' \
+  --observed-conversation-id '<visible chat id>'
 ```
 
 Only click Send when this command succeeds. A subscription/account label does not establish the selected model. `极高` and `Pro` are distinct labels.
@@ -179,9 +204,75 @@ For Project mode, also supply `--expected-project-id`,
 `--binding-status active`. Expected values come from routing; observed values
 come from the visible destination, not from a same-titled sidebar item.
 
+### 2.6 Submission handoff and response watcher
+
+Before Send, use the stable ChatGPT conversation ID exposed by Codex's native
+chat reference or the verified conversation URL. An `@`-mentioned chat supplies
+this identity; it is not a completion subscription. Titles are display
+metadata, not identity. When native reads are available, record the existing
+turn IDs or cursor as the pre-submit boundary and keep a digest of the exact
+prompt.
+
+Acquire the host-local browser lease only for a browser-mutating critical
+section: open the exact chat, upload, preflight, and click Send once. Treat the
+submission as accepted only after the user message or generating state is
+visible. Record the observed submission time, then release the lease in all
+paths. Do not hold it while ChatGPT generates.
+
+```bash
+python3 .agents/skills/gpt-pro-question-window/scripts/manage_browser_lease.py \
+  --repo . release --token '<token>'
+```
+
+Prefer the Codex-native `read_thread` tool for response retrieval:
+
+1. Read the exact ChatGPT conversation ID, never a same-titled chat.
+2. Identify the new user turn after the saved boundary and verify it against the
+   submitted prompt or its unique fingerprint. Pin that remote turn ID—the ID
+   of the turn containing the target user message and its direct assistant
+   reply; never use "the latest turn" as the sole selector.
+3. Accept only that turn's direct assistant reply when the turn status is
+   `completed`, no error is present, and the returned assistant item is not
+   marked `truncated`.
+4. If the native tool is unavailable, the target is ambiguous, or any required
+   item is truncated, reacquire a new browser lease, locate that already pinned
+   turn by ID and prompt fingerprint, and copy its full response from the
+   verified conversation. Pass the same remote turn ID to persistence and
+   release the new lease after capture or failure. Never substitute the page's
+   bottom-most response.
+
+`wait_threads` currently waits for Codex tasks, not ChatGPT chats. For a short
+wait, poll `read_thread` with bounded intervals. For a later wake-up, create one
+heartbeat automation attached to the current Codex task—not a standalone cron
+or worktree task—and retain the returned automation ID. Its durable prompt must
+contain the conversation ID, pre-submit boundary, prompt digest, deadline, and
+these terminal rules:
+
+- On no change, do not notify, resubmit, or modify Bridge state.
+- On a complete, untruncated target reply, capture it once, then delete the
+  automation before the single terminal notification.
+- On a complete but truncated target reply, the same watcher attempts the
+  browser fallback under a new lease. If the lease is temporarily busy before
+  the deadline, stay silent and retry later; do not create another watcher. On
+  fallback capture, delete the watcher. On deadline or a non-retryable browser
+  failure, record diagnostics, delete the watcher, and report once.
+- On an explicit remote failure or deadline expiry, delete the automation and
+  report the failure once; never create a duplicate watcher.
+
+On every terminal path, persist the capture or diagnostics before cleanup, then
+delete the watcher by its exact automation ID. If deletion is rejected, pause
+it immediately and report the cleanup failure only once. This fallback applies
+equally to native success, browser-fallback success, explicit failure, and
+timeout.
+
+The wait is transient state, not a fourth canonical event. Until the full raw
+answer is captured, do not append `gpt-exchange`. A failed or timed-out attempt
+therefore leaves an honestly incomplete round, and `--require-complete-rounds`
+must continue to fail.
+
 ### 3. Exchange capture
 
-After the answer finishes, immediately capture the raw exchange:
+After the full answer is available, immediately capture the raw exchange:
 
 ```bash
 python3 .agents/skills/gpt-pro-question-window/scripts/save_bridge_turn.py \
@@ -198,9 +289,16 @@ python3 .agents/skills/gpt-pro-question-window/scripts/save_bridge_turn.py \
   --submitted-at '<ISO-8601 with timezone>' \
   --generation-observed-at '<ISO-8601 with timezone>' \
   --response-completed-at '<ISO-8601 with timezone>' \
+  --capture-route native-read-thread \
+  --remote-turn-id '<matched completed turn id>' \
   --prompt-file /tmp/gpt-pro-prompt.md \
   --answer-file /tmp/gpt-pro-answer.md
 ```
+
+For native capture, omit the already released browser lease token. For browser
+fallback capture, pass `--capture-route browser-fallback` and the newly acquired
+`--browser-lease-token`, plus the same `--remote-turn-id`; release that lease
+after the command returns. Never save a truncated native item as the raw answer.
 
 Capture the raw answer even when the observed model is mismatched or unverified, but preserve that status and do not claim the answer came from Pro.
 
@@ -208,7 +306,7 @@ For Project mode, also pass `--bridge-project-id <project-id>`,
 `--remote-project-id <g-p-id>`, `--observed-workspace <workspace>`, and
 `--observed-account-label <account-label>`.
 
-Completion criterion: a numbered immutable turn exists; its bundle digest matches the file sent; model and attachment provenance are recorded truthfully; the GPT Pro session remains bound to one thread and one ChatGPT URL; and one `gpt-exchange` event points to the turn.
+Completion criterion: a numbered immutable turn exists; its bundle digest matches the file sent; its capture route and target remote turn are recorded; model and attachment provenance are recorded truthfully; the GPT Pro session remains bound to one thread and one ChatGPT URL; and one `gpt-exchange` event points to the turn.
 
 ### 4. Codex verdict
 
@@ -288,6 +386,10 @@ Prerequisite: install and enable the Codex Chrome extension. In this environment
 7. Use Computer Use only when Chrome cannot control a native or graphical UI boundary.
 8. For a dry run, remove the attachment and verify the composer is empty.
 
-While generation remains visibly active, keep waiting without resubmission. Inspect every 30–60 seconds, provide a short progress update at least once per minute, and record only timestamps actually observed. On a stalled or failed state, capture diagnostics and stop instead of duplicating the request.
+Release the browser lease after Send is visibly accepted. Observe the remote
+generation through the native response handoff above; do not resubmit. Reacquire
+the browser only for a required full-answer fallback, and record only timestamps
+actually observed. On a stalled or failed state, capture diagnostics and stop
+instead of duplicating the request.
 
 If `setFiles(...)` reports `Not allowed`, enable **Allow access to file URLs** for the Codex Chrome extension. Stop for CAPTCHA, rate limits, abuse warnings, unusual login, passwords, 2FA, or account-security prompts.

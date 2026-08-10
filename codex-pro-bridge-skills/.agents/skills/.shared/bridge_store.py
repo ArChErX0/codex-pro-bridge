@@ -161,6 +161,116 @@ def file_lock(path: Path) -> Iterator[None]:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+# --- Host-local browser lease -------------------------------------------------
+# Serializes browser-mutating windows (attach/upload/preflight/send and any
+# later full-answer browser fallback) so that several parallel Review Probes
+# never drive the one signed-in browser at once. Release it during generation
+# and reacquire it for fallback capture. This is an ADVISORY, HOST-LOCAL lease
+# at the same trust level as file_lock. Chrome is inherently host-local; this is
+# NOT a distributed lock and does not make
+# cross-machine/SSHFS concurrency safe. An expired lease may be taken over.
+DEFAULT_BROWSER_LEASE_TTL_SECONDS = 1800
+
+
+def _browser_lease_path(repo: Path) -> Path:
+    return bridge_root(repo) / "locks" / "browser.lease.json"
+
+
+def read_browser_lease(repo: Path) -> Dict[str, Any]:
+    """Return the current lease record, or {} when none is held."""
+    path = _browser_lease_path(repo)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _lease_is_live(lease: Mapping[str, Any], *, now: dt.datetime) -> bool:
+    expires_at = str(lease.get("expires_at", "")) if lease else ""
+    if not expires_at:
+        return False
+    try:
+        return dt.datetime.fromisoformat(expires_at) > now
+    except ValueError:
+        return False
+
+
+def acquire_browser_lease(
+    repo: Path,
+    *,
+    holder: str,
+    thread_id: str = "",
+    expected_conversation_id: str = "",
+    expected_remote_project_id: str = "",
+    ttl_seconds: int = DEFAULT_BROWSER_LEASE_TTL_SECONDS,
+) -> Dict[str, Any]:
+    """Take the host-local browser lease, or raise if a live one is held.
+
+    A lease whose ``expires_at`` is in the past is treated as free and may be
+    taken over; the previous holder is reported in the raised error otherwise.
+    """
+    repo = repo.resolve()
+    if not holder.strip():
+        raise BridgeError("A browser lease requires a non-empty --holder")
+    if ttl_seconds <= 0:
+        raise BridgeError("Browser lease ttl-seconds must be positive")
+    lease_path = _browser_lease_path(repo)
+    lock_path = lease_path.with_name(f".{lease_path.name}.lock")
+    with file_lock(lock_path):
+        now = dt.datetime.now().astimezone()
+        current = read_browser_lease(repo)
+        if _lease_is_live(current, now=now) and current.get("holder") != holder:
+            raise BridgeError(
+                "Browser lease is held by "
+                f"{current.get('holder', '<unknown>')!r} for thread "
+                f"{current.get('thread_id', '<none>')!r} until "
+                f"{current.get('expires_at', '<unknown>')}"
+            )
+        token = uuid.uuid4().hex
+        acquired = now.isoformat(timespec="seconds")
+        expires = (now + dt.timedelta(seconds=ttl_seconds)).isoformat(timespec="seconds")
+        lease = {
+            "token": token,
+            "holder": holder,
+            "thread_id": thread_id,
+            "expected_conversation_id": expected_conversation_id,
+            "expected_remote_project_id": expected_remote_project_id,
+            "acquired_at": acquired,
+            "expires_at": expires,
+        }
+        atomic_write_text(lease_path, json.dumps(lease, ensure_ascii=False, sort_keys=True) + "\n")
+        return lease
+
+
+def release_browser_lease(repo: Path, *, token: str) -> bool:
+    """Release the lease when ``token`` matches. Returns True when cleared."""
+    repo = repo.resolve()
+    lease_path = _browser_lease_path(repo)
+    lock_path = lease_path.with_name(f".{lease_path.name}.lock")
+    with file_lock(lock_path):
+        current = read_browser_lease(repo)
+        if not current:
+            return False
+        if current.get("token") != token:
+            raise BridgeError("Browser lease token does not match the current holder")
+        atomic_write_text(lease_path, json.dumps({}, ensure_ascii=False) + "\n")
+        return True
+
+
+def assert_browser_lease_held(repo: Path, *, token: str) -> Dict[str, Any]:
+    """Return the lease when ``token`` still holds a live lease, else raise."""
+    current = read_browser_lease(repo)
+    now = dt.datetime.now().astimezone()
+    if not current or current.get("token") != token:
+        raise BridgeError("Browser lease token is not the current holder")
+    if not _lease_is_live(current, now=now):
+        raise BridgeError("Browser lease has expired; re-acquire before submitting")
+    return current
+
+
 def write_bound_metadata(
     path: Path,
     values: Mapping[str, Any],

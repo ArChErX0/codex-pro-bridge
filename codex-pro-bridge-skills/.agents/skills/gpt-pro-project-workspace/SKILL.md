@@ -77,20 +77,32 @@ Project activity; never edit the JSONL ledger by hand.
 
 ## Project Sources
 
+Source sync is **explicit by default**. `plan_project_source_sync.py` freezes
+every already-synced source at its confirmed remote version unless you name it
+with `--only`/`--source`. A local edit to an unlisted source never triggers an
+upload or replacement, so routine local churn never overwrites remote sources or
+blocks routing. Use `--all` to deliberately re-scan and push every changed
+source (the pre-freeze behavior).
+
 1. Inventory the visible Project Sources before planning.
 2. Save that complete observation as JSON, including `[]` for an empty
    Project, and run `scripts/plan_project_source_sync.py` with
-   `--remote-inventory-file` plus the selected stable local files.
+   `--remote-inventory-file`. Add `--only <path>` for each source you want to
+   push this round; omit it to freeze everything, or pass `--all` to re-scan
+   all known sources.
 3. Stop if the plan is blocked, names a sensitive file, or exceeds capacity.
 4. Upload every `uploads[].upload_path` through the visible Project source
    control. Each staged basename already equals the planned digest-bearing
    `remote_name`; do not upload the original local path under a different name.
+   Frozen sources appear under `frozen_sources`/`reuse`; they are never uploaded
+   or removed.
 5. In `managed` mode, verify every uploaded filename before removing an older
    bridge-managed version. In the default `append_only` mode, retain old
    versions.
 6. Never remove a user-managed filename.
 7. Record only observed effects with
-   `scripts/record_project_source_sync.py`.
+   `scripts/record_project_source_sync.py`. Frozen sources keep their prior
+   status from the observed inventory; they do not regress to pending.
 8. Run `scripts/verify_bridge_project.py --require-active-binding
    --require-synced-sources --require-inventory-verified`.
 

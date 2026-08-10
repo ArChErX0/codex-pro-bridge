@@ -53,6 +53,8 @@ Codex Pro Bridge 不是 API client，也不是让 GPT Pro 直接修改本地文�
 5. Codex 保存完整回答，做本地摘要，并验证可执行结论。
 6. 同一个任务继续进入实现、实验或下一轮聚焦评审。
 
+在 Codex 桌面端，Bridge 会在 Send 后释放浏览器，并在能力可用时通过原生读取跟踪准确的 ChatGPT 对话与目标轮次。可选的一次性 heartbeat 会在等待期间保持静默，并在完成、失败或超时后释放；若原生结果被截断，则重新获取浏览器 lease，回收同一目标轮次的完整回答。
+
 ```mermaid
 sequenceDiagram
   participant C as Codex
@@ -255,6 +257,7 @@ and implement only locally verified changes.
 | --- | --- |
 | `gpt-pro-project-workspace` | 绑定、路由、同步、查看和修复 Project 工作区 |
 | `gpt-pro-question-window` | 提普通问题或继续已有外部评审 |
+| `gpt-pro-review-probe` | 对单个想法、方案或原子任务执行高频、可并行的 standalone 评审 |
 | `bundle-algorithm-context` | 为需要源码的评审构建限定范围的证据包 |
 | `gpt-pro-research-algorithm-reviewer` | 评审算法、管线、实验和研究 claim |
 | `gpt-pro-paper-brainstormer` | 推进论文 framing、novelty、反对意见和实验故事 |

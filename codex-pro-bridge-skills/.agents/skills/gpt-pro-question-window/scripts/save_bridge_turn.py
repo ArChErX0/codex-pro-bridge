@@ -19,12 +19,14 @@ sys.path.insert(0, str(SHARED_DIR))
 from bridge_store import (  # noqa: E402
     BridgeError,
     append_event,
+    assert_browser_lease_held,
     atomic_write_text,
     bridge_root,
     default_codex_session_id,
     default_gpt_session_id,
     file_lock,
     file_sha256,
+    load_events,
     now_iso,
     parse_metadata,
     record_codex_verdict,
@@ -95,6 +97,16 @@ def project_segment_from_conversation_url(value: str) -> str:
     return parts[1] if len(parts) == 4 and parts[0] == "g" and parts[2] == "c" else ""
 
 
+def conversation_id_from_url(value: str) -> str:
+    """Return the ChatGPT conversation id from a /c/<id> or /g/<pid>/c/<id> URL."""
+    parts = [part for part in urlparse(value).path.split("/") if part]
+    if len(parts) == 2 and parts[0] == "c":
+        return parts[1]
+    if len(parts) == 4 and parts[0] == "g" and parts[2] == "c":
+        return parts[3]
+    return ""
+
+
 def validate_timestamp(value: str, flag: str, *, default_now: bool = False) -> str:
     if not value:
         return now_iso() if default_now else ""
@@ -137,6 +149,8 @@ def build_turn(
     attachment_name: str,
     attachment_verification: str,
     upload_control: str,
+    capture_route: str,
+    remote_turn_id: str,
     saved_at: str,
     prompt: str,
     answer: str,
@@ -168,6 +182,8 @@ def build_turn(
             f"- Attachment Name: {attachment_name or '-'}",
             f"- Attachment Verification: {attachment_verification}",
             f"- Upload Control: {upload_control or '-'}",
+            f"- Capture Route: {capture_route}",
+            f"- Remote Turn ID: {remote_turn_id or '-'}",
             f"- Submitted at: {submitted_at}",
             f"- Generation observed at: {generation_observed_at or '-'}",
             f"- Response completed at: {response_completed_at or '-'}",
@@ -206,6 +222,34 @@ def main() -> int:
     parser.add_argument("--bridge-thread-id", required=True, help="Canonical task id.")
     parser.add_argument("--bridge-project-id", default="", help="Optional parent Bridge Project.")
     parser.add_argument(
+        "--standalone",
+        action="store_true",
+        help=(
+            "Fast lane for high-frequency Review Probes: capture a standalone turn "
+            "with no Bridge Project. Skips all Project source-sync gating. Fails if "
+            "the thread is attached to a Project."
+        ),
+    )
+    parser.add_argument(
+        "--single-round",
+        action="store_true",
+        help="Refuse to capture if this thread already has a gpt-exchange (one-shot probe).",
+    )
+    parser.add_argument(
+        "--expected-conversation-id",
+        default="",
+        help="Canonical ChatGPT conversation id reserved for this thread; the bound "
+        "web URL must match it. Prevents 'right Project, wrong chat'.",
+    )
+    parser.add_argument(
+        "--browser-lease-token",
+        default="",
+        help=(
+            "Optional token verified during a browser fallback capture. Omit for "
+            "native read_thread capture after the Send lease was released."
+        ),
+    )
+    parser.add_argument(
         "--remote-project-id",
         default="",
         help="Observed ChatGPT Project id for a Project-bound conversation.",
@@ -233,6 +277,20 @@ def main() -> int:
     parser.add_argument("--selected-ui-label", default="", help="Exact selected model label visible before submission.")
     parser.add_argument("--attachment-name", default="", help="Attachment name visible in the composer before submission.")
     parser.add_argument("--upload-control", default="", help="Successful semantic upload route, for example visible-menu.")
+    parser.add_argument(
+        "--capture-route",
+        choices=("browser", "browser-fallback", "native-read-thread"),
+        default="browser",
+        help=(
+            "Where the full raw answer was captured. browser is the compatible "
+            "legacy path; browser-fallback requires a pinned turn and live new lease."
+        ),
+    )
+    parser.add_argument(
+        "--remote-turn-id",
+        default="",
+        help="Exact completed ChatGPT turn selected by native response retrieval.",
+    )
     parser.add_argument("--prompt", default="")
     parser.add_argument("--prompt-file", default="")
     parser.add_argument("--answer", default="")
@@ -312,15 +370,72 @@ def main() -> int:
                 f"Codex session {codex_session_id} is bound to "
                 f"{codex_meta['bridge_thread_id']}, not {thread_id}"
             )
+        if args.standalone and args.bridge_project_id:
+            raise BridgeError("--standalone cannot be combined with --bridge-project-id")
+        capture_route = args.capture_route
+        remote_turn_id = args.remote_turn_id.strip()
+        if remote_turn_id and not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", remote_turn_id):
+            raise BridgeError(
+                "--remote-turn-id must contain only letters, digits, underscores, or hyphens"
+            )
+        if capture_route in {"native-read-thread", "browser-fallback"}:
+            if not remote_turn_id:
+                raise BridgeError(
+                    f"--remote-turn-id is required for --capture-route {capture_route}"
+                )
+            if not args.expected_conversation_id.strip():
+                raise BridgeError(
+                    f"--expected-conversation-id is required for {capture_route} capture"
+                )
+        if capture_route == "native-read-thread":
+            if args.browser_lease_token:
+                raise BridgeError(
+                    "Native read_thread capture must omit the released browser lease token"
+                )
+        elif capture_route == "browser-fallback" and not args.browser_lease_token:
+            raise BridgeError(
+                "--browser-lease-token is required for --capture-route browser-fallback"
+            )
+        if args.browser_lease_token:
+            lease = assert_browser_lease_held(repo, token=args.browser_lease_token)
+            lease_thread_id = str(lease.get("thread_id", ""))
+            if lease_thread_id and lease_thread_id != thread_id:
+                raise BridgeError(
+                    f"Browser lease belongs to thread {lease_thread_id!r}, not {thread_id!r}"
+                )
+            lease_conversation_id = str(lease.get("expected_conversation_id", ""))
+            if lease_conversation_id and (
+                lease_conversation_id != args.expected_conversation_id.strip()
+            ):
+                raise BridgeError(
+                    "Browser lease conversation does not match --expected-conversation-id"
+                )
+        if args.single_round:
+            prior_exchange = any(
+                event.get("event_type") == "gpt-exchange"
+                for event in load_events(bridge_dir, thread_id)
+            )
+            if prior_exchange:
+                raise BridgeError(
+                    f"--single-round: thread {thread_id} already has a captured "
+                    "gpt-exchange; open a fresh probe thread for another round"
+                )
         project_store = BridgeProjectStore(repo)
         bridge_project_id = (
-            args.bridge_project_id
+            ""
+            if args.standalone
+            else args.bridge_project_id
             or codex_meta.get("bridge_project_id", "")
             or project_store.project_for_thread(thread_id)
         )
         remote_project_id = ""
         observed_workspace = args.observed_workspace.strip()
         observed_account_label = args.observed_account_label.strip()
+        if args.standalone and project_store.project_for_thread(thread_id):
+            raise BridgeError(
+                f"--standalone requires an unattached thread, but {thread_id} is "
+                "attached to a Bridge Project; open a fresh probe thread id"
+            )
         if bridge_project_id:
             bridge_project_id = project_store.resolve_project_id(bridge_project_id)
             bridge_project = project_store.load_project(bridge_project_id)
@@ -454,6 +569,15 @@ def main() -> int:
                 )
         if previous.get("web_conversation_url") not in (None, "", web_url):
             raise BridgeError("A GPT Pro session cannot be rebound to another web conversation URL")
+        expected_conversation_id = args.expected_conversation_id.strip()
+        if expected_conversation_id:
+            observed_conversation_id = conversation_id_from_url(web_url)
+            if observed_conversation_id != expected_conversation_id:
+                raise BridgeError(
+                    f"Bound conversation {observed_conversation_id or '<none>'!r} does not "
+                    f"match the reserved conversation {expected_conversation_id!r}; refusing "
+                    "to record this turn against the wrong chat"
+                )
 
         notes_path = (
             resolve_repo_path(args.codex_notes, repo)
@@ -557,6 +681,8 @@ def main() -> int:
                         attachment_name=attachment_name,
                         attachment_verification=attachment_verification,
                         upload_control=args.upload_control.strip(),
+                        capture_route=capture_route,
+                        remote_turn_id=remote_turn_id,
                         saved_at=saved_at,
                         prompt=prompt,
                         answer=answer,
@@ -641,10 +767,13 @@ def main() -> int:
                 "attachment_name": attachment_name,
                 "attachment_verification": attachment_verification,
                 "upload_control": args.upload_control.strip(),
+                "capture_route": capture_route,
+                "remote_turn_id": remote_turn_id,
                 "submitted_at": submitted_at,
                 "generation_observed_at": generation_observed_at,
                 "response_completed_at": response_completed_at,
                 "response_wait_seconds": response_wait_seconds,
+                "observed_conversation_id": conversation_id_from_url(web_url),
             },
             dedupe_key=f"gpt-exchange:{capture_fingerprint}",
             occurred_at=saved_at,

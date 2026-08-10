@@ -97,6 +97,14 @@ by the local source manifest.
 bridge--<role>-<name>--<sha12>.<ext>
 ```
 
+Planning is explicit by default: only sources named with `--only`/`--source`
+are re-hashed and may upload or replace. Every other already-synced source is
+frozen at its confirmed remote version — not re-hashed, uploaded, or removed —
+so local churn never causes an unrequested overwrite. `--all` re-scans and
+pushes all changed sources. A frozen source keeps its status from the observed
+inventory (`synced` when still present and bridge-managed, else `missing`); it
+never regresses to `pending` merely because a round did not touch it.
+
 In `managed` mode, replacement is two-phase:
 
 1. Upload the new digest-named file.

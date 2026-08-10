@@ -73,7 +73,10 @@ def main() -> int:
             attach=args.apply,
         )
         print(json.dumps(decision.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
-        return 2 if decision.requires_confirmation else 0
+        # Exit codes: 0 = ready (attached/clean), 3 = needs human confirmation
+        # (JSON on stdout lists requires_confirmation), 2 = bad invocation
+        # (argparse/BridgeError via parser.error).
+        return 3 if decision.requires_confirmation else 0
     except (BridgeError, OSError) as exc:
         parser.error(str(exc))
 
