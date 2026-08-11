@@ -267,6 +267,7 @@ More examples are available in [examples/usage_prompts.md](codex-pro-bridge-skil
 
 | Skill | Purpose |
 | --- | --- |
+| `coordinate-auto-research` | Coordinate Auto Research roles, Research Lines, local Chats, Web conversation lineages, Handoff, and Settlement |
 | `gpt-pro-project-workspace` | Bind, route, synchronize, inspect, and repair Project-aware work |
 | `gpt-pro-question-window` | Ask a normal question or continue an existing external review |
 | `gpt-pro-review-probe` | Fast lane for high-frequency, fine-grained, parallel standalone review of one idea, proposal, or atomic task |
@@ -282,6 +283,7 @@ Use `$experiment-plan-generator` and `$implementation-consistency-checker` local
 ## Documentation
 
 - [Workflow overview](codex-pro-bridge-skills/docs/WORKFLOW.md)
+- [Auto Research skill optimization](codex-pro-bridge-skills/docs/AUTO_RESEARCH_OPTIMIZATION.md)
 - [Canonical bridge protocol](codex-pro-bridge-skills/.agents/skills/gpt-pro-question-window/references/bridge_protocol.md)
 - [Bridge Project protocol](codex-pro-bridge-skills/.agents/skills/gpt-pro-project-workspace/references/project_protocol.md)
 - [Evidence bundle schema](codex-pro-bridge-skills/.agents/skills/bundle-algorithm-context/references/bundle_schema.md)

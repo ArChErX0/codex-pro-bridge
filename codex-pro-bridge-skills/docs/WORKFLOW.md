@@ -66,6 +66,12 @@ GPT Pro can challenge assumptions, propose alternatives, identify missing experi
 
 Codex remains responsible for repository facts, edits, test execution, result interpretation, and the final decision.
 
+## Auto Research coordination
+
+`$coordinate-auto-research` adds an organization layer above the generic Bridge skills. It treats Auto Research as one user operating several role-bound local Codex Chats. One Student owns one Research Line and one active local Chat, while its logical Pro lineage may contain one active primary Web conversation plus independent probes and superseded continuation segments.
+
+The coordination skill resolves the local owner, scientific identity, Web conversation kind, active submission, and based-on revision before delegating browser, Project, review, experiment, or consistency work. The delegated skill returns an artifact or external pressure; the owning local role remains responsible for Handoff and canonical Settlement.
+
 For operational commands and invariants, read the relevant skill,
 [the canonical bridge protocol](../.agents/skills/gpt-pro-question-window/references/bridge_protocol.md),
 and [the Project protocol](../.agents/skills/gpt-pro-project-workspace/references/project_protocol.md).

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Coordinate Auto Research"
+  short_description: "Route Auto Research chats, Pro lineages, and settlement"
+  default_prompt: "Use $coordinate-auto-research to recover this research line, route the next action, and preserve its local-to-web chat bindings."

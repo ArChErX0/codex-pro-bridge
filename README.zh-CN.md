@@ -255,6 +255,7 @@ and implement only locally verified changes.
 
 | Skill | 作用 |
 | --- | --- |
+| `coordinate-auto-research` | 协调 Auto Research 角色、Research Line、本地 Chat、Web 对话 lineage、Handoff 与 Settlement |
 | `gpt-pro-project-workspace` | 绑定、路由、同步、查看和修复 Project 工作区 |
 | `gpt-pro-question-window` | 提普通问题或继续已有外部评审 |
 | `gpt-pro-review-probe` | 对单个想法、方案或原子任务执行高频、可并行的 standalone 评审 |
@@ -270,6 +271,7 @@ and implement only locally verified changes.
 ## 延伸文档
 
 - [工作流概览](codex-pro-bridge-skills/docs/WORKFLOW.md)
+- [Auto Research Skill 优化方案](codex-pro-bridge-skills/docs/AUTO_RESEARCH_OPTIMIZATION.md)
 - [Canonical bridge protocol](codex-pro-bridge-skills/.agents/skills/gpt-pro-question-window/references/bridge_protocol.md)
 - [Bridge Project protocol](codex-pro-bridge-skills/.agents/skills/gpt-pro-project-workspace/references/project_protocol.md)
 - [Evidence bundle schema](codex-pro-bridge-skills/.agents/skills/bundle-algorithm-context/references/bundle_schema.md)

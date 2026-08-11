@@ -1,5 +1,15 @@
 # Usage Prompts
 
+## Auto Research coordination
+
+```text
+Use $coordinate-auto-research.
+Recover the current local role, Research Line, and Chat bindings. Decide whether
+this Idea remains in the current Student, then route the next action. A Student
+may own one active primary Web conversation and several independent probes;
+preserve the owning local Chat, based-on revision, Handoff, and Settlement path.
+```
+
 ## Normal question
 
 ```text

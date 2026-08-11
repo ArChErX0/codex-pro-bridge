@@ -18,12 +18,13 @@ Repository-local installation:
 ./install.sh --repo /path/to/repo
 ```
 
-The installer replaces only the nine managed skills and `.shared`. Repository-local installation also adds `.agents/` and `.codex/` to the target repository's local `.git/info/exclude`.
+The installer replaces only the ten managed skills and `.shared`. Repository-local installation also adds `.agents/` and `.codex/` to the target repository's local `.git/info/exclude`.
 
 ## Entry points
 
 | Need | Skill |
 | --- | --- |
+| Coordinate Auto Research roles, Research Lines, local Chats, Web conversation lineages, Handoff, and Settlement | `$coordinate-auto-research` |
 | Bind, inspect, route, or repair a ChatGPT Project | `$gpt-pro-project-workspace` |
 | Normal question or existing conversation | `$gpt-pro-question-window` |
 | High-frequency / parallel review of one idea, proposal, or atomic task | `$gpt-pro-review-probe` |
