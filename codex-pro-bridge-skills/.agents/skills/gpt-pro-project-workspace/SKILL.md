@@ -133,13 +133,16 @@ conversation.
 
 ## Browser seam
 
-Select Chrome DevTools MCP or the Codex Chrome connector using
+Use Chrome DevTools MCP as the primary route using
 [`browser_adapters.md`](../gpt-pro-question-window/references/browser_adapters.md)
-and use visible semantic controls. Acquire the same browser lease before Project
+and use visible semantic controls. Use the Codex Chrome connector only for the
+documented pre-submit compatibility fallback. Acquire the same browser lease before Project
 discovery mutations, source upload/removal, conversation creation, or instruction
 editing. None of these browser effects changes local identity until an observation
-is recorded by a script. Across repositories or worktrees, use one declared
-dispatcher until the lease is host-global.
+is recorded by a script. Across repositories, worktrees, or SSH execution hosts
+that share one browser profile, use one declared dispatcher until the lease is
+host-global. Stage and digest-verify remote sources on the browser host before
+upload; SSH access does not make a remote absolute path uploadable by local Chrome.
 
 Do not store cookies, tokens, private web responses, or account credentials in
 Bridge state. Stop for login, 2FA, CAPTCHA, service protections, account

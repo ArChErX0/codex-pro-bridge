@@ -60,7 +60,7 @@ round = disposable.
    It prints `probe_thread_id`, `codex_notes`, and `bundle`. It never runs
    source-sync and never asks for Project confirmation.
 
-2. Select an adapter using the Question Window's
+2. Use the DevTools-first route in the Question Window's
    [browser adapter reference](../gpt-pro-question-window/references/browser_adapters.md),
    then acquire the browser lease before touching the signed-in Chrome profile:
 
@@ -71,12 +71,17 @@ round = disposable.
      --expected-conversation-id <reserved-chat-id>
    ```
 
-   The lease serializes browser mutations within this repository regardless of
-   adapter. Across repositories or worktrees, use one declared dispatcher.
+   Chrome DevTools MCP is the primary route. The connector is permitted only
+   for the documented pre-submit fallback. The lease serializes browser
+   mutations within this repository regardless of route. Across repositories,
+   worktrees, or SSH execution hosts that share one browser profile, use one
+   declared dispatcher.
 
-3. Upload the bundle through the selected adapter and a visible semantic
-   control. Record `devtools-mcp-upload-file` or
-   `codex-chrome-visible-menu`, then gate the submission with
+3. Upload the bundle through DevTools MCP and a visible semantic control.
+   Record `devtools-mcp-upload-file`; record `codex-chrome-visible-menu` only
+   when the compatibility fallback was actually required. When execution is
+   remote over SSH, first stage the bundle on the browser host and verify its
+   digest. Then gate the submission with
    `check_browser_preflight.py`, passing `--repo`, `--bridge-thread-id`, the
    `--browser-lease-token`, `--expected-conversation-id`, and the
    `--observed-conversation-id` read from the browser. The gate fails closed on
@@ -126,6 +131,9 @@ host-tool operations rather than shell commands.
   preflight/Send, plus a browser fallback capture) is behind the browser lease.
   The lease is released while remote generations run, so several generations
   may remain in flight without several workers driving Chrome at once.
+- **SSH boundary:** remote repository or compute work may run in parallel, but
+  the browser-host dispatcher owns staging, upload, preflight, and Send. A
+  remote Codex process does not inherit access to the operator's local Chrome.
 - **Contamination guard:** the conversation-id gate makes "right Project, wrong
   chat" fail closed, so a probe's result can never be recorded against the wrong
   chat. Record `observed_conversation_id` on each turn for later reconciliation.

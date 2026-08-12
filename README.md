@@ -187,11 +187,13 @@ For a small local bug, formatting change, or straightforward implementation task
 
 Before using the bridge for the first time:
 
-1. Use a US-region network connection to install and enable the [Codex extension](https://chromewebstore.google.com/detail/codex/hehggadaopoacecdllhhajmbjkdcmajg) from the Chrome Web Store.
-2. Open `chrome://extensions/?id=hehggadaopoacecdllhhajmbjkdcmajg`, open the extension's **Details**, and enable **Allow access to file URLs**.
-3. Sign in to ChatGPT with the same Chrome profile that Codex will use.
+1. Configure [Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp) on the same host as Chrome, enable remote debugging at `chrome://inspect/#remote-debugging`, and restart Codex.
+2. Sign in to ChatGPT with the Chrome profile that DevTools MCP will control.
+3. Optional fallback: install the [Codex extension](https://chromewebstore.google.com/detail/codex/hehggadaopoacecdllhhajmbjkdcmajg) and enable **Allow access to file URLs** in its extension details.
 
 These are one-time setup steps. The selected skill checks them again before an external review round.
+
+Repository and compute work may run through SSH while the Bridge controls local Chrome. Stage and digest-verify the approved bundle locally before upload. A Codex process running on a remote SSH host does not automatically inherit the local Chrome session; use the local Bridge dispatcher unless an explicit secure browser connection is configured.
 
 ### Install
 

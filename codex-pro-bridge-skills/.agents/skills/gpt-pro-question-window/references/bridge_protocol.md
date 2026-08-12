@@ -373,17 +373,17 @@ recording exactly what one review round saw.
 
 ## Browser route
 
-Read [browser_adapters.md](browser_adapters.md) and select exactly one adapter for each browser-mutating critical section. Prefer Chrome DevTools MCP when its tools are available and connected to the intended signed-in profile; otherwise use the Codex Chrome connector. The connector alone requires its extension and **Allow access to file URLs** permission.
+Read [browser_adapters.md](browser_adapters.md) and use Chrome DevTools MCP for each browser-mutating critical section. The Codex Chrome connector is a compatibility fallback only when DevTools MCP is unavailable or fails before upload/Send while the composer remains empty. The connector alone requires its extension and **Allow access to file URLs** permission.
 
 1. Use signed-in Chrome for ChatGPT/GPT Pro.
 2. Acquire the browser lease before destination selection, upload, preflight, or Send. The lease applies to every adapter.
 3. Select the exact conversation by stable URL/ID, then use a visible semantic upload control.
-4. Upload the absolute bundle path and verify the exact attachment chip. Record `devtools-mcp-upload-file` or `codex-chrome-visible-menu` as the upload control.
+4. Upload the absolute bundle path from the browser host and verify the exact attachment chip. Record `devtools-mcp-upload-file`, or `codex-chrome-visible-menu` only for an observed connector fallback, as the upload control.
 5. Read the exact selected model label and run `check_browser_preflight.py`; do not send on mismatch.
 6. In Project mode, open the saved Project URL and verify its visible ID,
    account/workspace, and active local binding before creating or reusing a
    conversation.
-7. Use Computer Use only when neither browser adapter can control a native or graphical UI boundary.
+7. Use Computer Use only when neither browser route can control a native or graphical UI boundary.
 8. For a dry run, remove the attachment and verify the composer is empty.
 
 Release the browser lease after Send is visibly accepted. Observe the remote
@@ -392,6 +392,6 @@ the browser only for a required full-answer fallback, and record only timestamps
 actually observed. On a stalled or failed state, capture diagnostics and stop
 instead of duplicating the request.
 
-If connector `setFiles(...)` reports `Not allowed`, the DevTools MCP path may be tried once only when the composer remains empty and no remote upload started. A ChatGPT service rejection is not an adapter failure. Stop for CAPTCHA, rate limits, abuse warnings, unusual login, passwords, 2FA, remote-debugging permission, or account-security prompts.
+If DevTools MCP fails before upload/Send and the composer remains empty, the connector may be tried once. A ChatGPT service rejection is not a browser-route failure. Stop for CAPTCHA, rate limits, abuse warnings, unusual login, passwords, 2FA, remote-debugging permission, or account-security prompts.
 
-The browser profile is host-local while the current advisory lease is repository-local. Across repositories or worktrees, use one declared dispatcher until a host-global lease exists. Page IDs and independent MCP processes do not provide mutual exclusion.
+The browser profile is host-local while the current advisory lease is repository-local. Across repositories, worktrees, or SSH execution hosts, use one declared dispatcher per browser host/profile until a host-global lease exists. Page IDs and independent MCP processes do not provide mutual exclusion. Keep MCP and Chrome on the same host by default; when repository execution is remote, stage and digest-verify the approved bundle on the browser host before upload. A remote Codex process cannot use `--autoConnect` to discover the operator's local Chrome.

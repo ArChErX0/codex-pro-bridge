@@ -178,11 +178,13 @@ Follow-up 通常只复用当前 Codex notes 和精简任务历史。只有文件
 
 第一次使用 Bridge 前：
 
-1. 使用美区网络，从 Chrome Web Store 安装并启用 [Codex 扩展](https://chromewebstore.google.com/detail/codex/hehggadaopoacecdllhhajmbjkdcmajg)。
-2. 打开 `chrome://extensions/?id=hehggadaopoacecdllhhajmbjkdcmajg`，进入扩展的 **Details**，开启 **Allow access to file URLs**。
-3. 在 Codex 将使用的同一个 Chrome profile 中登录 ChatGPT。
+1. 在 Chrome 所在主机配置 [Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp)，打开 `chrome://inspect/#remote-debugging` 启用远程调试，然后重启 Codex。
+2. 在 DevTools MCP 将控制的 Chrome profile 中登录 ChatGPT。
+3. 可选 fallback：安装 [Codex 扩展](https://chromewebstore.google.com/detail/codex/hehggadaopoacecdllhhajmbjkdcmajg)，并在扩展详情中开启 **Allow access to file URLs**。
 
 以上只需设置一次。每次开始外部评审前，选中的 skill 会再次检查这些前置条件。
+
+仓库和计算任务可以通过 SSH 在远端运行，同时由本地 Bridge 控制本地 Chrome；上传前应将获准的 bundle 落到本机并核对摘要。运行在 SSH 远端的 Codex 不会自动继承本机 Chrome 会话，除非显式配置了安全的浏览器连接，否则应由本地 Bridge dispatcher 负责浏览器步骤。
 
 ### 安装
 

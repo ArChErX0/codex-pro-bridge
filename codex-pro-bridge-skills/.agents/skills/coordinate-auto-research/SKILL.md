@@ -83,6 +83,8 @@ Select the narrowest downstream capability:
 
 Retain Auto Research ownership of scope, identity, authority, Handoff, and canonical effects. Treat downstream outputs as artifacts, diagnostics, or pressure until the owning local role verifies them.
 
+All downstream ChatGPT page effects inherit the Question Window's DevTools-first browser route. SSH may move repository and compute execution to another host, but staging, upload, preflight, and Send remain owned by the declared browser-host dispatcher.
+
 Completion criterion: the selected capability returns to the originating local owner without changing Research Line identity or canonical state on its own.
 
 ## Guard asynchronous work

@@ -36,7 +36,10 @@ The installer replaces only the ten managed skills and `.shared`. Repository-loc
 
 `$gpt-pro-question-window` resolves `local_only`, `standalone`, and `project`
 routes automatically. `$bundle-algorithm-context` prepares evidence for
-source-backed external rounds.
+source-backed external rounds. ChatGPT page mutations use Chrome DevTools MCP
+by default; the Codex Chrome connector is a pre-submit compatibility fallback.
+SSH may host repository or compute work, while one local browser-host dispatcher
+stages verified bundles and controls the signed-in Chrome profile.
 
 See [usage_prompts.md](examples/usage_prompts.md) for invocation examples.
 Operational details live in the relevant skills, the

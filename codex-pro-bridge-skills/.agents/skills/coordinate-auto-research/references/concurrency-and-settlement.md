@@ -8,7 +8,7 @@ Treat these as separate coordination domains:
 | --- | --- | --- |
 | Scientific write | canonical entity / writer scope | different non-overlapping entities |
 | Persistent Pro round | Web conversation ID | different conversations |
-| Browser mutation | signed-in Chrome/profile | remote generation after Send |
+| Browser mutation | browser host + signed-in Chrome/profile | remote generation after Send |
 | Project Source apply | Project binding and manifest revision | local read-only analysis |
 | Settlement | canonical base revision and close-out writer | preparation against immutable snapshots |
 
@@ -27,7 +27,9 @@ Queue a second submission to the same conversation. Release the browser lease af
 
 ## Browser coordination
 
-Use the browser lease supplied by `$gpt-pro-question-window` for upload, preflight, Send, and browser fallback regardless of whether the adapter is Chrome DevTools MCP or the Codex Chrome connector. Require one coordinator for the signed-in Chrome/profile across repository worktrees. If the environment cannot prove host-global serialization, funnel browser mutations through one declared dispatcher and report the limitation instead of assuming repository-local locks or MCP page IDs protect the browser.
+Use Chrome DevTools MCP as the primary route for upload, preflight, Send, and browser fallback. Permit the Codex Chrome connector only for the Question Window's documented pre-submit compatibility fallback. Use the browser lease supplied by `$gpt-pro-question-window` for either route. Require one coordinator for the browser host and signed-in Chrome/profile across repositories, worktrees, and SSH execution hosts. If the environment cannot prove host-global serialization, funnel browser mutations through one declared dispatcher and report the limitation instead of assuming repository-local locks or MCP page IDs protect the browser.
+
+Keep browser control on the browser host when repository or compute work runs through SSH. Stage only approved evidence on that host, compare SHA-256 before and after transfer, and upload the local staged path. A Codex process running on another SSH host does not automatically inherit the operator's local MCP configuration or Chrome session; prefer a local Bridge dispatcher unless an explicit, loopback-only debugging tunnel and path-visibility check have been authorized.
 
 ## Callback and revision races
 

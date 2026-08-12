@@ -1,6 +1,6 @@
 ---
 name: gpt-pro-question-window
-description: Bridge Codex to the correct signed-in ChatGPT/GPT Pro conversation, automatically choosing standalone or a bound ChatGPT Project, with scoped upload, conversation reuse, raw answer capture, and later Codex verification. Use for normal GPT Pro questions and as the browser/persistence foundation for other Codex Pro Bridge skills; do not use for local tasks that need no external reasoning.
+description: Bridge Codex to the correct signed-in ChatGPT/GPT Pro conversation through a Chrome DevTools MCP-first browser route, automatically choosing standalone or a bound ChatGPT Project, with scoped upload, conversation reuse, raw answer capture, and later Codex verification. Use for normal GPT Pro questions and as the browser/persistence foundation for other Codex Pro Bridge skills; do not use for local tasks that need no external reasoning.
 ---
 
 # GPT Pro Question Window
@@ -15,7 +15,7 @@ Before creating or resuming bridge state, read [references/bridge_protocol.md](r
 2. If the route is `local_only`, stop using this skill and complete the work locally. If the route requires confirmation, resolve the binding or ambiguity before continuing. Apply a ready Project route once.
 3. Use the returned `bridge-thread-id`. Reuse the GPT Pro session only when its local metadata points to the intended web conversation, Bridge Thread, and ChatGPT Project. Otherwise create a new task-scoped conversation.
 4. For Project mode, open the exact saved Project URL and visibly verify the Project ID, account/workspace, active binding, and current source inventory before creating or reusing the conversation. Reconcile the observed inventory locally. Never choose by title alone.
-5. Select one browser adapter using [references/browser_adapters.md](references/browser_adapters.md), then open ChatGPT in the user's intended signed-in Chrome profile. Ask the user to handle remote-debugging permission, login, passwords, 2FA, CAPTCHA, rate limits, or account-security prompts.
+5. Resolve the browser and execution hosts using [references/browser_adapters.md](references/browser_adapters.md), then use Chrome DevTools MCP against the user's intended signed-in Chrome profile. Use the Codex Chrome connector only for its documented pre-submit compatibility fallback. Ask the user to handle remote-debugging permission, login, passwords, 2FA, CAPTCHA, rate limits, or account-security prompts.
 6. Upload a focused Task Bundle through that adapter when evidence is needed. A Task Bundle is not a Project Source. Never replace a failed upload with a full repository paste unless the user explicitly approves that fallback.
 7. Read the exact selected model label, visible attachment name, and Project identity when applicable. Acquire the repository-local advisory browser lease; before Send, record the stable conversation ID, existing turn IDs or cursor, and prompt digest as the pre-submit boundary. Run `scripts/check_browser_preflight.py`. If the requested model is `Pro`, labels such as `极高` or an account name containing “Pro” do not satisfy the gate.
 8. Click Send once. After ChatGPT visibly accepts the prompt, record the submission time and target turn ID when available, then release the browser lease immediately. Do not hold it while the remote model generates.
@@ -37,7 +37,7 @@ For a normal question, read and use [references/question_window_prompt.md](refer
 
 ## Browser upload
 
-Read [references/browser_adapters.md](references/browser_adapters.md) before attaching a file or performing browser fallback. Prefer Chrome DevTools MCP when its tools are available and connected to the intended signed-in profile. Otherwise use the Codex Chrome connector. Both paths use visible semantic controls and the same browser lease.
+Read [references/browser_adapters.md](references/browser_adapters.md) before attaching a file, crossing an SSH boundary, or performing browser fallback. Use Chrome DevTools MCP as the primary route. Use the Codex Chrome connector only when DevTools MCP is unavailable or fails before upload/Send while the composer remains empty. Both routes use visible semantic controls and the same browser lease.
 
 Build the zip locally and keep its output path absolute. Record the successful route as `devtools-mcp-upload-file` or `codex-chrome-visible-menu`. Verify the exact filename or attachment chip before submission and remove it after a dry run.
 
@@ -70,13 +70,14 @@ observed in the browser:
   --binding-status active
 ```
 
-Use Computer Use only when neither browser adapter can control a required native or graphical UI boundary. An extension permission failure affects the connector path, not DevTools MCP.
+Use Computer Use only when neither browser route can control a required native or graphical UI boundary. An extension permission failure affects the connector fallback, not DevTools MCP.
 
 Treat attachment preprocessing that stalls before submission as a bundle-shape problem: regenerate a smaller package or at most two or three focused attachments. Do not interrupt a response that remains visibly active merely because a Pro run is slow.
 
 ## Browser pacing
 
 - Prefer one conversation per Bridge Thread. Independent deliverables receive independent Threads and conversations; never use the same Bridge Thread concurrently.
+- Treat the signed-in Chrome machine as the browser host. SSH may move repository execution elsewhere, but the bundle must be staged and digest-verified on the browser host before `upload_file`; SSH reachability alone does not make a remote Codex process able to control local Chrome.
 - Serialize only browser-mutating critical sections regardless of adapter: attach/upload/preflight/Send and any browser fallback capture. Release the browser lease after each section; remote generations may overlap. Across repositories or worktrees, use one declared dispatcher until the lease is host-global.
 - Use bounded native reads for an immediate wait. If a later wake-up is useful, create one heartbeat watcher for the current task, retain its automation ID, and poll only the exact ChatGPT conversation. Delete the watcher on captured success, explicit failure, or timeout; do not resubmit.
 - Treat any `truncated: true`, incomplete status, missing target turn, or multiple plausible new turns as non-capturable. Reacquire the browser only when the full raw answer cannot be obtained natively.
@@ -94,3 +95,4 @@ Treat attachment preprocessing that stalls before submission as a bundle-shape p
 - Verify ledger parents, artifact hashes, and bundle hashes before continuing the thread.
 - Never move an existing local session to another thread or web URL.
 - Never overwrite a saved bundle, turn, snapshot, or verdict.
+- Never expose a Chrome debugging endpoint on a public or shared interface.
