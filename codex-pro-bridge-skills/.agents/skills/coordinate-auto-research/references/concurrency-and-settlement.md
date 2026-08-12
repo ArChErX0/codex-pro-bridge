@@ -27,7 +27,7 @@ Queue a second submission to the same conversation. Release the browser lease af
 
 ## Browser coordination
 
-Use the browser lease supplied by `$gpt-pro-question-window` for upload, preflight, Send, and browser fallback. Require one coordinator for the signed-in Chrome/profile across repository worktrees. If the environment cannot prove host-global serialization, funnel browser mutations through one declared dispatcher and report the limitation instead of assuming repository-local locks protect the browser.
+Use the browser lease supplied by `$gpt-pro-question-window` for upload, preflight, Send, and browser fallback regardless of whether the adapter is Chrome DevTools MCP or the Codex Chrome connector. Require one coordinator for the signed-in Chrome/profile across repository worktrees. If the environment cannot prove host-global serialization, funnel browser mutations through one declared dispatcher and report the limitation instead of assuming repository-local locks or MCP page IDs protect the browser.
 
 ## Callback and revision races
 

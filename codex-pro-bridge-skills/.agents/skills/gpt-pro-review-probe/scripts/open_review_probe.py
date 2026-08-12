@@ -7,7 +7,8 @@ standalone, single-round Bridge Thread that NEVER attaches to a Bridge Project,
 so it never consults Project source-sync and is never blocked when unrelated
 shared sources are stale. Many probes run in parallel because each is a distinct
 thread with its own ledger; only browser-mutating critical sections are
-serialized by the host-local browser lease.
+serialized by the repository-local advisory browser lease. Separate worktrees
+still require one declared dispatcher.
 
 This orchestrator prepares the immutable Codex snapshot and builds the standalone
 evidence bundle. It deliberately does NOT import BridgeProjectStore and never
@@ -135,15 +136,17 @@ def main() -> int:
     print(f"  1. python3 {lease_script} --repo {repo} acquire \\", file=sys.stderr)
     print(f"       --holder <worker-id> --bridge-thread-id {thread_id} \\", file=sys.stderr)
     print("       --expected-conversation-id <reserved-chat-id>", file=sys.stderr)
+    print("     Select DevTools MCP or the Codex Chrome connector per", file=sys.stderr)
+    print("     gpt-pro-question-window/references/browser_adapters.md.", file=sys.stderr)
     print(f"  2. python3 {preflight_script} --repo {repo} \\", file=sys.stderr)
     print(f"       --bridge-thread-id {thread_id} --browser-lease-token <token> \\", file=sys.stderr)
     print("       --requested-model Pro \\", file=sys.stderr)
     print("       --selected-ui-label Pro --bundle <abs-bundle-path> \\", file=sys.stderr)
-    print("       --attachment-name <visible-name> --upload-control visible-menu \\", file=sys.stderr)
+    print("       --attachment-name <visible-name> --upload-control <observed-route> \\", file=sys.stderr)
     print("       --expected-conversation-id <id> --observed-conversation-id <id>", file=sys.stderr)
     print("  3. Before Send, record existing turn IDs/cursor and prompt digest.", file=sys.stderr)
     print("     Click Send once; after acceptance, record submitted_at and the", file=sys.stderr)
-    print("     target turn ID when available. Do not wait in Chrome.", file=sys.stderr)
+    print("     target turn ID when available. Do not wait in the browser.", file=sys.stderr)
     print(f"  4. python3 {lease_script} --repo {repo} release --token <token>", file=sys.stderr)
     print("  5. Poll the exact ChatGPT conversation with Codex read_thread; pin", file=sys.stderr)
     print("     the matched completed, untruncated remote turn id.", file=sys.stderr)

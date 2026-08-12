@@ -165,10 +165,10 @@ def file_lock(path: Path) -> Iterator[None]:
 # Serializes browser-mutating windows (attach/upload/preflight/send and any
 # later full-answer browser fallback) so that several parallel Review Probes
 # never drive the one signed-in browser at once. Release it during generation
-# and reacquire it for fallback capture. This is an ADVISORY, HOST-LOCAL lease
-# at the same trust level as file_lock. Chrome is inherently host-local; this is
-# NOT a distributed lock and does not make
-# cross-machine/SSHFS concurrency safe. An expired lease may be taken over.
+# and reacquire it for fallback capture. This is an ADVISORY, REPOSITORY-LOCAL
+# lease at the same trust level as file_lock. Chrome is host-local, so separate
+# worktrees/repositories still need one declared dispatcher. This is NOT a
+# distributed lock. An expired lease may be taken over.
 DEFAULT_BROWSER_LEASE_TTL_SECONDS = 1800
 
 
@@ -207,7 +207,7 @@ def acquire_browser_lease(
     expected_remote_project_id: str = "",
     ttl_seconds: int = DEFAULT_BROWSER_LEASE_TTL_SECONDS,
 ) -> Dict[str, Any]:
-    """Take the host-local browser lease, or raise if a live one is held.
+    """Take the repository-local browser lease, or raise if a live one is held.
 
     A lease whose ``expires_at`` is in the past is treated as free and may be
     taken over; the previous holder is reported in the raised error otherwise.

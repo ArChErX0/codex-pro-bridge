@@ -13,8 +13,8 @@ A **Review Probe** is a `standalone`, single-round Bridge Thread. It never
 attaches to a Bridge Project, so it never consults Project source-sync and is
 **never blocked when unrelated shared Project sources are stale or missing**.
 Each probe is its own thread with its own ledger, so many probes run in parallel
-safely; only browser-mutating critical sections are serialized by a host-local
-lease.
+safely; only browser-mutating critical sections are serialized by a
+repository-local advisory lease. Across worktrees, use one declared dispatcher.
 
 This skill builds on [gpt-pro-question-window](../gpt-pro-question-window/SKILL.md)
 for the browser and persistence seam. Read
@@ -60,7 +60,9 @@ round = disposable.
    It prints `probe_thread_id`, `codex_notes`, and `bundle`. It never runs
    source-sync and never asks for Project confirmation.
 
-2. Acquire the host-local browser lease before touching Chrome:
+2. Select an adapter using the Question Window's
+   [browser adapter reference](../gpt-pro-question-window/references/browser_adapters.md),
+   then acquire the browser lease before touching the signed-in Chrome profile:
 
    ```bash
    python3 .agents/skills/gpt-pro-question-window/scripts/manage_browser_lease.py \
@@ -69,10 +71,12 @@ round = disposable.
      --expected-conversation-id <reserved-chat-id>
    ```
 
-   The lease serializes the one signed-in Chrome. It is advisory and host-local
-   (Chrome is host-local); it is not a distributed lock.
+   The lease serializes browser mutations within this repository regardless of
+   adapter. Across repositories or worktrees, use one declared dispatcher.
 
-3. Upload the bundle through a visible control, then gate the submission with
+3. Upload the bundle through the selected adapter and a visible semantic
+   control. Record `devtools-mcp-upload-file` or
+   `codex-chrome-visible-menu`, then gate the submission with
    `check_browser_preflight.py`, passing `--repo`, `--bridge-thread-id`, the
    `--browser-lease-token`, `--expected-conversation-id`, and the
    `--observed-conversation-id` read from the browser. The gate fails closed on

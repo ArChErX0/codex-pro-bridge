@@ -133,10 +133,13 @@ conversation.
 
 ## Browser seam
 
-Use the Chrome connector and visible semantic controls. Project discovery,
-source inventory, upload, conversation creation, and instruction editing are
-browser adapter operations; none of them changes local identity until an
-observation is recorded by a script.
+Select Chrome DevTools MCP or the Codex Chrome connector using
+[`browser_adapters.md`](../gpt-pro-question-window/references/browser_adapters.md)
+and use visible semantic controls. Acquire the same browser lease before Project
+discovery mutations, source upload/removal, conversation creation, or instruction
+editing. None of these browser effects changes local identity until an observation
+is recorded by a script. Across repositories or worktrees, use one declared
+dispatcher until the lease is host-global.
 
 Do not store cookies, tokens, private web responses, or account credentials in
 Bridge state. Stop for login, 2FA, CAPTCHA, service protections, account
