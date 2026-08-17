@@ -21,7 +21,7 @@ Read the canonical state and lifecycle rules at [../gpt-pro-question-window/refe
    - `$gpt-pro-research-algorithm-reviewer` for algorithm, pipeline, and experiment critique.
    - `$gpt-pro-paper-brainstormer` for paper framing.
    - `$gpt-pro-question-window` for a normal question.
-5. Use `$gpt-pro-question-window` to upload through a visible control, verify the attachment, gate the exact requested model, send once, release the browser, and follow its native-response handoff and fallback rules to capture the full raw exchange on the same `bridge-thread-id`.
+5. Use `$gpt-pro-question-window` to create one recoverable request, acquire the account generation slot, upload through the short browser lease, verify the attachment and model family/effort, send once, release the browser, and use its heartbeat/native-response handoff to capture the exact full exchange on the same `bridge-thread-id`.
 6. Re-open the repository evidence and classify every actionable claim as verified, partially verified, unsupported, or inapplicable.
 7. Record that result as a separate `codex-verdict` event before implementing it.
 8. Use `$experiment-plan-generator` when empirical evidence is required. Prefer the cheapest sanity or kill experiment before expensive work.
@@ -31,7 +31,7 @@ Read the canonical state and lifecycle rules at [../gpt-pro-question-window/refe
     in Project mode also verify the Bridge Project. Update Codex notes and
     repeat only when another GPT Pro round has a concrete unresolved question.
 
-Completion criterion: the thread contains a verified snapshot/exchange/verdict chain for every external round; exact model and attachment provenance are recorded; the final answer distinguishes GPT Pro advice from locally verified facts; implemented changes and tests are recorded; and no open critical inconsistency is hidden.
+Completion criterion: the thread contains a verified snapshot/exchange/verdict chain for every external round; exact request, model family/effort, execution/degradation, and attachment provenance are recorded; the final answer distinguishes GPT Pro advice from locally verified facts; implemented changes and tests are recorded; and no open critical inconsistency is hidden.
 
 ## Handoff to the user
 

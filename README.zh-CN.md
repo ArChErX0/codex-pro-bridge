@@ -200,6 +200,18 @@ Follow-up 通常只复用当前 Codex notes 和精简任务历史。只有文件
 ./codex-pro-bridge-skills/install.sh --repo /path/to/repo
 ```
 
+如果需要由远端 Codex task 发起 review，请在该远端主机一次性执行：
+
+```bash
+./codex-pro-bridge-skills/remote-skills/install.sh --global
+python3 ~/.codex/skills/gpt-pro-bridge-client/scripts/prepare_review_bundle.py \
+  configure --dispatcher-thread-id '<Mac dispatcher task id>' \
+  --dispatcher-host-id '<Mac Codex host id>' \
+  --ssh-alias '<Mac 到远端的 SSH alias>'
+```
+
+这些部署身份只保存在远端用户的私有 Codex state 中，不要写进可分发的 Skill 源码。
+
 如果已有 Codex task 没有发现更新后的 skills，请重启 Codex 或新建 task。
 
 ### 提一个普通问题

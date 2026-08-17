@@ -5,15 +5,15 @@ A Review Probe is the fast lane for high-frequency, fine-grained, parallel
 review of a single idea, research proposal, or atomic sub-task. It is a
 standalone, single-round Bridge Thread that NEVER attaches to a Bridge Project,
 so it never consults Project source-sync and is never blocked when unrelated
-shared sources are stale. Many probes run in parallel because each is a distinct
-thread with its own ledger; only browser-mutating critical sections are
-serialized by the repository-local advisory browser lease. Separate worktrees
+shared sources are stale. Evidence preparation may run in parallel because each
+probe is a distinct thread. Formal Pro generations are serialized per account,
+and browser mutations use a separate host-global lease. Separate worktrees
 still require one declared dispatcher.
 
 This orchestrator prepares the immutable Codex snapshot and builds the standalone
 evidence bundle. It deliberately does NOT import BridgeProjectStore and never
 runs source-sync. It stops before the browser step and prints the exact next
-handoff (lease -> preflight -> Send -> release -> native read -> capture) so the
+handoff (round -> generation slot -> lease -> Send -> watcher -> capture) so the
 browser seam stays an explicit, verifiable human/agent action.
 """
 
@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import re
 import subprocess
 import sys
@@ -59,6 +60,14 @@ def run(cmd: list[str]) -> str:
     if result.stderr.strip():
         sys.stderr.write(result.stderr)
     return result.stdout.strip()
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def main() -> int:
@@ -123,45 +132,86 @@ def main() -> int:
     if args.include:
         bundle_cmd += ["--include", *args.include]
     bundle_path = run(bundle_cmd).splitlines()[-1].strip()
+    bundle_sha256 = file_sha256(Path(bundle_path))
+    request_id = f"{thread_id}-r1"
 
+    dispatcher_script = QW_SCRIPTS / "manage_bridge_dispatcher.py"
     lease_script = QW_SCRIPTS / "manage_browser_lease.py"
+    round_script = QW_SCRIPTS / "manage_bridge_round.py"
+    stage_script = QW_SCRIPTS / "stage_bridge_attachment.py"
     preflight_script = QW_SCRIPTS / "check_browser_preflight.py"
     save_script = QW_SCRIPTS / "save_bridge_turn.py"
 
     print(f"probe_thread_id: {thread_id}")
+    print(f"request_id: {request_id}")
     print(f"codex_notes: {notes_path}")
     print(f"bundle: {bundle_path}")
+    print(f"bundle_sha256: {bundle_sha256}")
     print()
-    print("Next (release the browser while ChatGPT generates):", file=sys.stderr)
-    print(f"  1. python3 {lease_script} --repo {repo} acquire \\", file=sys.stderr)
+    print("Next (run in the one claimed Mac dispatcher task):", file=sys.stderr)
+    print(f"  1. python3 {dispatcher_script} status", file=sys.stderr)
+    print("     If this task is not the active owner, hand off the request;", file=sys.stderr)
+    print("     do not call Chrome from here.", file=sys.stderr)
+    print(f"  2. python3 {round_script} create \\", file=sys.stderr)
+    print(f"       --request-id {request_id} --bridge-thread-id {thread_id} \\", file=sys.stderr)
+    print(f"       --bridge-repo {repo} --source-kind local \\", file=sys.stderr)
+    print(f"       --bundle-path {bundle_path} --bundle-sha256 {bundle_sha256} \\", file=sys.stderr)
+    print("       --prompt-sha256 <exact-prompt-sha256> \\", file=sys.stderr)
+    print("       --requested-model-family <required-model-family> \\", file=sys.stderr)
+    print("       --requested-effort Pro \\", file=sys.stderr)
+    print("       --account-key <workspace/account-key> --deadline-at <ISO-8601>", file=sys.stderr)
+    print(f"  3. python3 {round_script} slot-acquire \\", file=sys.stderr)
+    print(f"       --request-id {request_id} --account-key <workspace/account-key> \\", file=sys.stderr)
+    print("       --deadline-at <same-deadline>; queue if acquired=false.", file=sys.stderr)
+    print(f"  4. python3 {stage_script} local --source {bundle_path} \\", file=sys.stderr)
+    print(f"       --bridge-thread-id {thread_id}", file=sys.stderr)
+    print("     Retain staged_file and staged_sha256, then run:", file=sys.stderr)
+    print(f"       python3 {round_script} staging --request-id {request_id} \\", file=sys.stderr)
+    print("       --staging-status verified --staged-file <staged-file> \\", file=sys.stderr)
+    print("       --staged-sha256 <staged-sha256>", file=sys.stderr)
+    print(f"  5. python3 {lease_script} --repo {repo} acquire \\", file=sys.stderr)
     print(f"       --holder <worker-id> --bridge-thread-id {thread_id} \\", file=sys.stderr)
     print("       --expected-conversation-id <reserved-chat-id>", file=sys.stderr)
-    print("     Use DevTools MCP as the primary route per", file=sys.stderr)
-    print("     gpt-pro-question-window/references/browser_adapters.md; use", file=sys.stderr)
-    print("     the Codex Chrome connector only for its pre-submit fallback.", file=sys.stderr)
-    print(f"  2. python3 {preflight_script} --repo {repo} \\", file=sys.stderr)
-    print(f"       --bridge-thread-id {thread_id} --browser-lease-token <token> \\", file=sys.stderr)
-    print("       --requested-model Pro \\", file=sys.stderr)
-    print("       --selected-ui-label Pro --bundle <abs-bundle-path> \\", file=sys.stderr)
-    print("       --attachment-name <visible-name> --upload-control <observed-route> \\", file=sys.stderr)
-    print("       --expected-conversation-id <id> --observed-conversation-id <id>", file=sys.stderr)
-    print("  3. Before Send, record existing turn IDs/cursor and prompt digest.", file=sys.stderr)
-    print("     Click Send once; after acceptance, record submitted_at and the", file=sys.stderr)
-    print("     target turn ID when available. Do not wait in the browser.", file=sys.stderr)
-    print(f"  4. python3 {lease_script} --repo {repo} release --token <token>", file=sys.stderr)
-    print("  5. Poll the exact ChatGPT conversation with Codex read_thread; pin", file=sys.stderr)
+    print("     Use DevTools MCP as the primary route; use the Chrome connector", file=sys.stderr)
+    print("     only for the documented pre-submit fallback.", file=sys.stderr)
+    print(f"  6. python3 {preflight_script} --repo {repo} \\", file=sys.stderr)
+    print(f"       --bridge-thread-id {thread_id} \\", file=sys.stderr)
+    print("       --dispatcher-thread-id <dispatcher-task-id> \\", file=sys.stderr)
+    print("       --dispatcher-token <dispatcher-token> --browser-lease-token <token> \\", file=sys.stderr)
+    print("       --requested-model-family <required-model-family> \\", file=sys.stderr)
+    print("       --selected-model-family <exact-visible-family> \\", file=sys.stderr)
+    print("       --requested-effort Pro --selected-effort Pro \\", file=sys.stderr)
+    print(f"       --bundle {bundle_path} --staged-file <staged-file> \\", file=sys.stderr)
+    print("       --attachment-name <visible-name> \\", file=sys.stderr)
+    print("       --upload-control <observed-route> --expected-conversation-id <id> \\", file=sys.stderr)
+    print("       --observed-conversation-id <id>", file=sys.stderr)
+    print("  7. Record the boundary, then before Send run:", file=sys.stderr)
+    print(f"       python3 {round_script} transition --request-id {request_id} \\", file=sys.stderr)
+    print("       --to submitting --conversation-id <id> \\", file=sys.stderr)
+    print("       --pre-submit-boundary <boundary> --selected-model-family <family> \\", file=sys.stderr)
+    print("       --selected-effort Pro --model-selection-status verified", file=sys.stderr)
+    print("     Send once. After visible acceptance run:", file=sys.stderr)
+    print(f"       python3 {round_script} transition --request-id {request_id} \\", file=sys.stderr)
+    print("       --to submitted --submitted-at <millisecond-ISO-8601>", file=sys.stderr)
+    print(f"  8. python3 {lease_script} --repo {repo} release --token <token>", file=sys.stderr)
+    print("  9. Poll the exact ChatGPT conversation with read_thread and pin", file=sys.stderr)
     print("     the matched completed, untruncated remote turn id.", file=sys.stderr)
-    print(f"  6. python3 {save_script} --repo {repo} --bridge-thread-id {thread_id} \\", file=sys.stderr)
-    print(f"       --standalone --single-round --bundle {bundle_path} \\", file=sys.stderr)
-    print("       --web-url <conversation-url> --expected-conversation-id <id> \\", file=sys.stderr)
-    print("       --capture-route native-read-thread --remote-turn-id <turn-id> \\", file=sys.stderr)
-    print("       --requested-model Pro --selected-ui-label Pro \\", file=sys.stderr)
+    print(f" 10. python3 {save_script} --repo {repo} --bridge-thread-id {thread_id} \\", file=sys.stderr)
+    print(f"       --request-id {request_id} --standalone --single-round \\", file=sys.stderr)
+    print(f"       --bundle {bundle_path} --web-url <conversation-url> \\", file=sys.stderr)
+    print("       --expected-conversation-id <id> --capture-route native-read-thread \\", file=sys.stderr)
+    print("       --remote-turn-id <turn-id> --requested-model-family <required-family> \\", file=sys.stderr)
+    print("       --selected-model-family <family> --attachment-name <visible-name> \\", file=sys.stderr)
+    print("       --attachment-sha256 <staged-sha256> --upload-control <observed-route> \\", file=sys.stderr)
+    print("       --requested-effort Pro --selected-effort Pro \\", file=sys.stderr)
     print("       --prompt-file <prompt> --answer-file <full-answer>", file=sys.stderr)
-    print("  7. If native output is unavailable, ambiguous, or truncated, acquire", file=sys.stderr)
-    print("     a new lease; locate the pinned turn, not the latest response; and", file=sys.stderr)
-    print("     capture with --capture-route browser-fallback,", file=sys.stderr)
-    print("     --remote-turn-id <same-turn-id>, and the new", file=sys.stderr)
-    print("     --browser-lease-token. Release that lease afterward.", file=sys.stderr)
+    print(" 11. For a long wait, create one current-task heartbeat from:", file=sys.stderr)
+    print(f"       python3 {round_script} watcher-spec --request-id {request_id} \\", file=sys.stderr)
+    print("       --target-thread-id <dispatcher-task-id>; save its automation ID.", file=sys.stderr)
+    print(" 12. If native output is unavailable, ambiguous, or truncated, acquire", file=sys.stderr)
+    print("     a new browser lease and capture only the pinned turn. Never resend.", file=sys.stderr)
+    print(" 13. After the target is terminal, capture/verdict/deliver, then run:", file=sys.stderr)
+    print(f"       python3 {round_script} slot-release --request-id {request_id}", file=sys.stderr)
     return 0
 
 

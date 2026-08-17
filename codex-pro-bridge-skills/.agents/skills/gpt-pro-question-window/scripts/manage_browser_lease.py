@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Acquire, release, or inspect the repository-local browser lease.
+"""Acquire, release, or inspect the host-global Pro Bridge browser lease.
 
 The lease serializes browser-mutating windows (attach/upload/preflight/send and
 any later full-answer browser fallback) so that several parallel Review Probes
 never drive the one signed-in browser at once. Release it while ChatGPT
 generates and reacquire it only if browser fallback is required.
-It is an advisory, repository-local lease for a host-local Chrome profile. It
-does not coordinate separate worktrees/repositories and is NOT a distributed
-lock. Use one declared dispatcher outside this repository.
+It is an advisory, host-global lease for the user's signed-in stable Chrome profile.
+It coordinates separate local repositories and worktrees, but it is NOT a
+distributed lock across machines.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from bridge_store import (  # noqa: E402
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Manage the repository-local browser lease.")
+    parser = argparse.ArgumentParser(description="Manage the host-global Pro Bridge browser lease.")
     parser.add_argument("--repo", default=".")
     sub = parser.add_subparsers(dest="command", required=True)
 

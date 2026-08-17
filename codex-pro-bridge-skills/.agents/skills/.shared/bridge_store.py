@@ -161,23 +161,33 @@ def file_lock(path: Path) -> Iterator[None]:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-# --- Host-local browser lease -------------------------------------------------
+# --- Host-global browser lease ------------------------------------------------
 # Serializes browser-mutating windows (attach/upload/preflight/send and any
 # later full-answer browser fallback) so that several parallel Review Probes
 # never drive the one signed-in browser at once. Release it during generation
-# and reacquire it for fallback capture. This is an ADVISORY, REPOSITORY-LOCAL
-# lease at the same trust level as file_lock. Chrome is host-local, so separate
-# worktrees/repositories still need one declared dispatcher. This is NOT a
-# distributed lock. An expired lease may be taken over.
+# and reacquire it for fallback capture. This is an ADVISORY, HOST-GLOBAL lease
+# at the same trust level as file_lock. All repositories and worktrees on this
+# machine share it because they drive the same signed-in stable Chrome profile.
+# This is NOT a distributed lock. An expired lease may be taken over.
 DEFAULT_BROWSER_LEASE_TTL_SECONDS = 1800
 
 
 def _browser_lease_path(repo: Path) -> Path:
-    return bridge_root(repo) / "locks" / "browser.lease.json"
+    # Keep ``repo`` in the public API for backwards compatibility with every
+    # existing Bridge command. The browser is host-local, so its lock must not
+    # live below a repository.
+    del repo
+    configured = os.environ.get("CODEX_PRO_BRIDGE_STATE_DIR", "").strip()
+    state_root = (
+        Path(configured).expanduser().resolve()
+        if configured
+        else Path.home() / ".codex" / "state" / "codex-pro-bridge"
+    )
+    return state_root / "locks" / "pro-bridge-browser.lease.json"
 
 
 def read_browser_lease(repo: Path) -> Dict[str, Any]:
-    """Return the current lease record, or {} when none is held."""
+    """Return the host-global lease record, or {} when none is held."""
     path = _browser_lease_path(repo)
     if not path.exists():
         return {}
@@ -207,7 +217,7 @@ def acquire_browser_lease(
     expected_remote_project_id: str = "",
     ttl_seconds: int = DEFAULT_BROWSER_LEASE_TTL_SECONDS,
 ) -> Dict[str, Any]:
-    """Take the repository-local browser lease, or raise if a live one is held.
+    """Take the host-global browser lease, or raise if a live one is held.
 
     A lease whose ``expires_at`` is in the past is treated as free and may be
     taken over; the previous holder is reported in the raised error otherwise.
@@ -234,6 +244,10 @@ def acquire_browser_lease(
         expires = (now + dt.timedelta(seconds=ttl_seconds)).isoformat(timespec="seconds")
         lease = {
             "token": token,
+            "scope": "host-global",
+            "browser_profile": os.environ.get(
+                "CODEX_PRO_BRIDGE_BROWSER_PROFILE", "stable-chrome"
+            ),
             "holder": holder,
             "thread_id": thread_id,
             "expected_conversation_id": expected_conversation_id,
@@ -704,8 +718,9 @@ def verify_thread_integrity(
     thread_id: str,
     *,
     require_complete_rounds: bool = False,
+    require_verified_provenance: bool = False,
 ) -> Dict[str, Any]:
-    """Verify ledger links, artifact digests, bundle digests, and round ordering."""
+    """Verify ledger structure plus modern Bridge provenance when available."""
     repo = repo.resolve()
     thread_id = validate_id(thread_id, "bridge thread id")
     events = load_events(bridge_root(repo), thread_id)
@@ -721,6 +736,7 @@ def verify_thread_integrity(
     artifact_count = 0
     bundle_count = 0
     project_ids: set[str] = set()
+    provenance_issues: list[str] = []
 
     for index, event in enumerate(events, start=1):
         prefix = f"event {index}"
@@ -810,6 +826,67 @@ def verify_thread_integrity(
                 raise BridgeError(f"{prefix}: bundle hash mismatch: {bundle_path}")
             bundle_count += 1
 
+        if event_type == "gpt-exchange" and str(data.get("request_id", "")).strip():
+            request_id = str(data.get("request_id", "")).strip()
+            if not re.fullmatch(
+                r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?",
+                request_id,
+            ):
+                provenance_issues.append(f"{prefix}: invalid request_id")
+            if not str(data.get("remote_turn_id", "")).strip():
+                provenance_issues.append(f"{prefix}: remote_turn_id is missing")
+            if data.get("capture_route") not in {
+                "native-read-thread",
+                "browser-fallback",
+            }:
+                provenance_issues.append(
+                    f"{prefix}: capture_route is not a modern verified route"
+                )
+            model_fields = (
+                str(data.get("requested_model_family", "")).strip(),
+                str(data.get("selected_model_family", "")).strip(),
+                str(data.get("requested_effort", "")).strip(),
+                str(data.get("selected_effort", "")).strip(),
+            )
+            if (
+                data.get("model_verification") != "verified"
+                or not all(model_fields)
+                or model_fields[0] != model_fields[1]
+                or model_fields[2] != model_fields[3]
+            ):
+                provenance_issues.append(
+                    f"{prefix}: model family/effort provenance is not verified"
+                )
+            allowed_execution = {
+                "degraded_fast",
+                "degraded_explicit",
+                "not_fast_degraded",
+                "unknown",
+            }
+            if data.get("execution_status") not in allowed_execution:
+                provenance_issues.append(f"{prefix}: execution_status is invalid")
+            if bundle_path:
+                if data.get("attachment_verification") != "verified":
+                    provenance_issues.append(
+                        f"{prefix}: bundle attachment provenance is not verified"
+                    )
+                observed_attachment_sha = str(
+                    data.get("attachment_sha256", "")
+                ).strip()
+                attachment_name = str(data.get("attachment_name", "")).strip()
+                canonical_name = Path(bundle_path).name
+                if observed_attachment_sha:
+                    if observed_attachment_sha != bundle_sha:
+                        provenance_issues.append(
+                            f"{prefix}: attachment SHA-256 differs from bundle"
+                        )
+                elif attachment_name != canonical_name:
+                    provenance_issues.append(
+                        f"{prefix}: aliased attachment lacks a verified SHA-256"
+                    )
+                if not str(data.get("upload_control", "")).strip():
+                    provenance_issues.append(f"{prefix}: upload_control is missing")
+
         if event_type == "codex-snapshot":
             if pending_exchange:
                 raise BridgeError(f"{prefix}: snapshot cannot precede the pending Codex verdict")
@@ -829,6 +906,10 @@ def verify_thread_integrity(
 
     if require_complete_rounds and (pending_exchange or round_has_snapshot):
         raise BridgeError("Bridge thread ends with an incomplete round")
+    if require_verified_provenance and provenance_issues:
+        raise BridgeError(
+            "Bridge provenance is not verified: " + "; ".join(provenance_issues[:8])
+        )
     return {
         "valid": True,
         "thread_id": thread_id,
@@ -838,6 +919,8 @@ def verify_thread_integrity(
         "artifact_count": artifact_count,
         "bundle_count": bundle_count,
         "round_complete": not pending_exchange and not round_has_snapshot,
+        "provenance_status": "verified" if not provenance_issues else "unverified",
+        "provenance_issues": provenance_issues,
     }
 
 

@@ -209,6 +209,19 @@ Repository-local installation:
 ./codex-pro-bridge-skills/install.sh --repo /path/to/repo
 ```
 
+For reviews initiated by a remote Codex task, run this once on that remote host:
+
+```bash
+./codex-pro-bridge-skills/remote-skills/install.sh --global
+python3 ~/.codex/skills/gpt-pro-bridge-client/scripts/prepare_review_bundle.py \
+  configure --dispatcher-thread-id '<Mac dispatcher task id>' \
+  --dispatcher-host-id '<Mac Codex host id>' \
+  --ssh-alias '<Mac-to-remote SSH alias>'
+```
+
+Keep those deployment identities in the remote user's private Codex state; do
+not commit them into the Skill source.
+
 Restart Codex or open a new task if an existing task does not discover the updated skills.
 
 ### Ask a normal question

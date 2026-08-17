@@ -27,7 +27,7 @@ The installer replaces only the ten managed skills and `.shared`. Repository-loc
 | Coordinate Auto Research roles, Research Lines, local Chats, Web conversation lineages, Handoff, and Settlement | `$coordinate-auto-research` |
 | Bind, inspect, route, or repair a ChatGPT Project | `$gpt-pro-project-workspace` |
 | Normal question or existing conversation | `$gpt-pro-question-window` |
-| High-frequency / parallel review of one idea, proposal, or atomic task | `$gpt-pro-review-probe` |
+| High-frequency probes with parallel evidence preparation and serialized Pro generation | `$gpt-pro-review-probe` |
 | Deep algorithm, pipeline, or experiment review | `$gpt-pro-research-algorithm-reviewer` |
 | Paper framing and reviewer pressure test | `$gpt-pro-paper-brainstormer` |
 | Complete external-review loop | `$gpt-pro-algorithm-pipeline` |
@@ -40,6 +40,24 @@ source-backed external rounds. ChatGPT page mutations use Chrome DevTools MCP
 by default; the Codex Chrome connector is a pre-submit compatibility fallback.
 SSH may host repository or compute work, while one local browser-host dispatcher
 stages verified bundles and controls the signed-in Chrome profile.
+
+Long-running rounds use host-level recoverable state, an account/workspace
+generation slot, and one current-task heartbeat. The SSH-side asynchronous
+client source lives at `remote-skills/gpt-pro-bridge-client`; it is deployed
+explicitly to the remote Codex host and is not part of the local installer.
+
+On the remote host, install and bind that client once:
+
+```bash
+./remote-skills/install.sh --global
+python3 ~/.codex/skills/gpt-pro-bridge-client/scripts/prepare_review_bundle.py \
+  configure --dispatcher-thread-id '<Mac dispatcher task id>' \
+  --dispatcher-host-id '<Mac Codex host id>' \
+  --ssh-alias '<Mac-to-remote SSH alias>'
+```
+
+Deployment identities are stored under the remote user's private Codex state;
+they are never committed in the distributable Skill.
 
 See [usage_prompts.md](examples/usage_prompts.md) for invocation examples.
 Operational details live in the relevant skills, the

@@ -1,0 +1,4 @@
+interface:
+  display_name: "GPT Pro Bridge Client"
+  short_description: "Route remote reviews asynchronously through the Mac Bridge"
+  default_prompt: "Use $gpt-pro-bridge-client to submit this focused remote review asynchronously to GPT Pro."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Pro Bridge"
+  short_description: "Run recoverable local or SSH GPT Pro reviews"
+  default_prompt: "Use $gpt-pro-question-window to run this focused GPT Pro review through the recoverable Bridge."

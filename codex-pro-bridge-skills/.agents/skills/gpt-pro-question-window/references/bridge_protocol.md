@@ -21,6 +21,7 @@ Expose one required task identifier:
 
 ```text
 bridge_thread_id = <repo>-<date>-<short-task>
+request_id       = <immutable-end-to-end-round-id>
 ```
 
 Project mode adds:
@@ -99,6 +100,18 @@ Repository-local installation adds `.agents/` and `.codex/` to that repository's
 
 All timestamps include a timezone. Event IDs are unique, and each event points to its parent event. Artifact records contain repository-relative paths and SHA-256 digests.
 
+Mutable wait/queue state is host-local operational state, not a canonical event:
+
+```text
+~/.codex/state/codex-pro-bridge/
+  rounds/<request-id>.json
+  locks/pro-generation-<account-hash>.lease.json
+```
+
+Read [round_controller.md](round_controller.md) for safe transitions, generation
+serialization, heartbeat creation, SSH callback, and restart recovery. Keep the
+three-event repository ledger unchanged.
+
 ## Round lifecycle
 
 ### 0. Resolve the route
@@ -129,9 +142,10 @@ For repeated, fine-grained, parallel review of one idea, proposal, or atomic
 sub-task, use standalone Review Probes instead of Project rounds. A probe never
 attaches to a Bridge Project, so it never consults Project source-sync and is
 never blocked when unrelated shared sources are stale. See
-[../../gpt-pro-review-probe/SKILL.md](../../gpt-pro-review-probe/SKILL.md). Many
-probes run in parallel because each is a distinct thread with its own ledger;
-only browser-mutating windows are serialized by the browser lease.
+[../../gpt-pro-review-probe/SKILL.md](../../gpt-pro-review-probe/SKILL.md).
+Evidence preparation and local verification may run in parallel because each
+probe has its own ledger. Formal Pro generations use the account/workspace slot;
+browser-mutating windows use the shorter browser lease.
 
 ### 1. Snapshot
 
@@ -174,7 +188,9 @@ For `auto`, use any `--include` paths as required focus seeds, close their defin
 
 ### 2.5 Browser preflight
 
-After the visible attachment chip and exact selected model label are observable, gate submission:
+After the visible attachment chip, model family, and effort are observable,
+create the operational round, acquire its account-level generation slot, then
+gate submission:
 
 ```bash
 python3 .agents/skills/gpt-pro-question-window/scripts/manage_browser_lease.py \
@@ -186,17 +202,24 @@ python3 .agents/skills/gpt-pro-question-window/scripts/manage_browser_lease.py \
 python3 .agents/skills/gpt-pro-question-window/scripts/check_browser_preflight.py \
   --repo . \
   --bridge-thread-id '<thread-id>' \
+  --dispatcher-thread-id '<current-dispatcher-task-id>' \
+  --dispatcher-token '<token from manage_bridge_dispatcher.py claim>' \
   --browser-lease-token '<token returned above>' \
-  --requested-model Pro \
-  --selected-ui-label '<exact visible label>' \
+  --requested-model-family '<required family>' \
+  --selected-model-family '<exact visible family>' \
+  --requested-effort Pro \
+  --selected-effort '<exact visible effort>' \
   --bundle /absolute/path/to/bundle.zip \
+  --staged-file '<absolute OS-temp file passed to upload_file>' \
   --attachment-name '<visible filename>' \
   --upload-control '<observed-upload-route>' \
   --expected-conversation-id '<reserved chat id>' \
   --observed-conversation-id '<visible chat id>'
 ```
 
-Only click Send when this command succeeds. A subscription/account label does not establish the selected model. `极高` and `Pro` are distinct labels.
+Only click Send when this command succeeds. A subscription/account label does
+not establish the selected family or effort. A visible downgrade, rate-limit,
+service, or account-protection warning fails the gate.
 
 For Project mode, also supply `--expected-project-id`,
 `--observed-project-id`, `--expected-workspace`, `--observed-workspace`,
@@ -213,11 +236,15 @@ metadata, not identity. When native reads are available, record the existing
 turn IDs or cursor as the pre-submit boundary and keep a digest of the exact
 prompt.
 
-Acquire the repository-local advisory browser lease only for a browser-mutating critical
-section: open the exact chat, upload, preflight, and click Send once. Treat the
-submission as accepted only after the user message or generating state is
-visible. Record the observed submission time, then release the lease in all
-paths. Do not hold it while ChatGPT generates.
+Acquire the account-level generation slot before entering the browser critical
+section. Then acquire the host-global browser lease only to open the exact chat,
+upload, preflight, and click Send once. Treat the submission as accepted only
+after the user message or generating state is visible. Immediately before Send,
+transition the operational round to `submitting` with the exact conversation,
+boundary, and selected model family/effort. Record the observed
+millisecond submission time and transition the operational round to `submitted`,
+then release the browser lease in all paths. Keep the generation slot until the
+target remote turn is terminal; do not hold the browser lease while it generates.
 
 ```bash
 python3 .agents/skills/gpt-pro-question-window/scripts/manage_browser_lease.py \
@@ -241,12 +268,12 @@ Prefer the Codex-native `read_thread` tool for response retrieval:
    release the new lease after capture or failure. Never substitute the page's
    bottom-most response.
 
-`wait_threads` currently waits for Codex tasks, not ChatGPT chats. For a short
-wait, poll `read_thread` with bounded intervals. For a later wake-up, create one
-heartbeat automation attached to the current Codex task—not a standalone cron
-or worktree task—and retain the returned automation ID. Its durable prompt must
-contain the conversation ID, pre-submit boundary, prompt digest, deadline, and
-these terminal rules:
+`wait_threads` waits for Codex tasks, not ChatGPT chats. For a short wait, poll
+`read_thread` with bounded intervals. For a later wake-up, generate the watcher
+payload from the operational round and create one heartbeat attached to the
+current dispatcher task—not a standalone cron or worktree task. Retain its
+automation ID. Its durable prompt contains the conversation ID, pre-submit
+boundary, prompt digest, deadline, and these terminal rules:
 
 - On no change, do not notify, resubmit, or modify Bridge state.
 - On a complete, untruncated target reply, capture it once, then delete the
@@ -259,11 +286,20 @@ these terminal rules:
 - On an explicit remote failure or deadline expiry, delete the automation and
   report the failure once; never create a duplicate watcher.
 
+Measure completion from accepted Send to the complete target response with
+millisecond timestamps. Record `<60000 ms` as `degraded_fast`. Record a visible
+downgrade/service signal as `degraded_explicit`. Record `>=60000 ms` only as
+`not_fast_degraded`; it does not prove full Pro execution. Keep transport,
+model-selection, and execution status separate, and leave retry to the user.
+
 On every terminal path, persist the capture or diagnostics before cleanup, then
 delete the watcher by its exact automation ID. If deletion is rejected, pause
 it immediately and report the cleanup failure only once. This fallback applies
 equally to native success, browser-fallback success, explicit failure, and
 timeout.
+
+Release the generation slot after the exact remote target is known terminal.
+An expired slot is a recovery gate, not permission to submit another round.
 
 The wait is transient state, not a fourth canonical event. Until the full raw
 answer is captured, do not append `gpt-exchange`. A failed or timed-out attempt
@@ -278,13 +314,17 @@ After the full answer is available, immediately capture the raw exchange:
 python3 .agents/skills/gpt-pro-question-window/scripts/save_bridge_turn.py \
   --repo . \
   --bridge-thread-id <thread-id> \
+  --request-id <request-id> \
   --web-url https://chatgpt.com/c/... \
   --web-title "<observed title>" \
   --purpose "<task purpose>" \
   --bundle .codex/codex-pro-bridge/bundles/<bundle>.zip \
-  --requested-model Pro \
-  --selected-ui-label '<exact visible label>' \
+  --requested-model-family '<required family>' \
+  --selected-model-family '<exact visible family>' \
+  --requested-effort Pro \
+  --selected-effort '<exact visible effort>' \
   --attachment-name '<visible filename>' \
+  --attachment-sha256 '<staged SHA-256 recorded before cleanup>' \
   --upload-control visible-menu \
   --submitted-at '<ISO-8601 with timezone>' \
   --generation-observed-at '<ISO-8601 with timezone>' \
@@ -295,10 +335,16 @@ python3 .agents/skills/gpt-pro-question-window/scripts/save_bridge_turn.py \
   --answer-file /tmp/gpt-pro-answer.md
 ```
 
-For native capture, omit the already released browser lease token. For browser
-fallback capture, pass `--capture-route browser-fallback` and the newly acquired
-`--browser-lease-token`, plus the same `--remote-turn-id`; release that lease
-after the command returns. Never save a truncated native item as the raw answer.
+For native capture, omit the already released browser lease token. Also pass
+the staged file digest as `--attachment-sha256`; this proves an aliased visible
+filename represents the canonical bundle even after OS-temp cleanup. For browser
+fallback, export `innerHTML` only from the exact pinned assistant turn into a
+schema-v1 payload using `evaluate_script.filePath` below the OS temp root, then
+run `scripts/capture_browser_markdown.py`; pass its output
+to `save_bridge_turn.py` with `--capture-route browser-fallback`, the newly
+acquired `--browser-lease-token`, and the same `--remote-turn-id`. Release that
+lease after capture. Never save `innerText` or a truncated native item as the
+raw answer.
 
 Capture the raw answer even when the observed model is mismatched or unverified, but preserve that status and do not claim the answer came from Pro.
 
@@ -334,10 +380,15 @@ Before another round and before final handoff, verify the append-only chain and 
 python3 .agents/skills/gpt-pro-question-window/scripts/verify_bridge_thread.py \
   --repo . \
   --bridge-thread-id <thread-id> \
-  --require-complete-rounds
+  --require-complete-rounds \
+  --require-verified-provenance
 ```
 
-The verifier fails on broken parents, duplicate identities, unsafe or missing artifact paths, artifact or bundle hash mismatches, invalid ordering, and incomplete final rounds.
+The strict verifier also fails when a modern request lacks its exact remote turn,
+capture route, complete model-family/effort pair, or hash-backed attachment
+provenance. Without `--require-verified-provenance`, it reports those items as
+warnings so immutable historical captures remain readable without being
+misrepresented as verified.
 
 Project mode also requires:
 
@@ -375,16 +426,16 @@ recording exactly what one review round saw.
 
 Read [browser_adapters.md](browser_adapters.md) and use Chrome DevTools MCP for each browser-mutating critical section. The Codex Chrome connector is a compatibility fallback only when DevTools MCP is unavailable or fails before upload/Send while the composer remains empty. The connector alone requires its extension and **Allow access to file URLs** permission.
 
-1. Use signed-in Chrome for ChatGPT/GPT Pro.
+1. Use the user's existing signed-in stable Chrome profile through `--autoConnect`. Ensure `chrome://inspect/#remote-debugging` is enabled and let the user approve a newly attached dispatcher MCP process. Route repeated local and remote reviews through that one long-lived Mac dispatcher; approval may recur after MCP, Chrome, or Codex restarts.
 2. Acquire the browser lease before destination selection, upload, preflight, or Send. The lease applies to every adapter.
 3. Select the exact conversation by stable URL/ID, then use a visible semantic upload control.
-4. Upload the absolute bundle path from the browser host and verify the exact attachment chip. Record `devtools-mcp-upload-file`, or `codex-chrome-visible-menu` only for an observed connector fallback, as the upload control.
-5. Read the exact selected model label and run `check_browser_preflight.py`; do not send on mismatch.
+4. Stage the bundle on the browser host with `stage_bridge_attachment.py local` or `remote`. Upload its returned OS-temp path and verify the exact attachment chip. Record `devtools-mcp-upload-file`, or `codex-chrome-visible-menu` only for an observed connector fallback, as the upload control.
+5. Read the exact selected model family and effort and run `check_browser_preflight.py`; do not send on mismatch or a visible service/account warning.
 6. In Project mode, open the saved Project URL and verify its visible ID,
    account/workspace, and active local binding before creating or reusing a
    conversation.
 7. Use Computer Use only when neither browser route can control a native or graphical UI boundary.
-8. For a dry run, remove the attachment and verify the composer is empty.
+8. For a dry run, remove the attachment and verify the composer is empty. Never close the selected ChatGPT page as cleanup. Delete only the run-owned staging directory in `finally`.
 
 Release the browser lease after Send is visibly accepted. Observe the remote
 generation through the native response handoff above; do not resubmit. Reacquire
@@ -394,4 +445,4 @@ instead of duplicating the request.
 
 If DevTools MCP fails before upload/Send and the composer remains empty, the connector may be tried once. A ChatGPT service rejection is not a browser-route failure. Stop for CAPTCHA, rate limits, abuse warnings, unusual login, passwords, 2FA, remote-debugging permission, or account-security prompts.
 
-The browser profile is host-local while the current advisory lease is repository-local. Across repositories, worktrees, or SSH execution hosts, use one declared dispatcher per browser host/profile until a host-global lease exists. Page IDs and independent MCP processes do not provide mutual exclusion. Keep MCP and Chrome on the same host by default; when repository execution is remote, stage and digest-verify the approved bundle on the browser host before upload. A remote Codex process cannot use `--autoConnect` to discover the operator's local Chrome.
+The browser profile and advisory lease are host-local and shared across repositories and worktrees. Page IDs and independent MCP processes do not provide mutual exclusion; the host-global lease does. Keep MCP and Chrome on the same host. When repository execution is remote, stage and digest-verify the approved bundle on the browser host before upload. A remote Codex process cannot discover or drive the operator's local Chrome; use the local dispatcher.

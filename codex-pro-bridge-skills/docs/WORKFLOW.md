@@ -12,9 +12,12 @@ The bridge keeps the handoff reproducible without treating the external answer a
 1. Codex identifies the concrete decision that needs outside reasoning.
 2. The router chooses `local_only`, `standalone`, or `project`.
 3. Codex prepares the smallest evidence package that can support that decision.
-4. GPT Pro reviews the supplied evidence in the task's exact conversation.
-5. Codex verifies actionable claims against local code, tests, configs, data, and logs.
-6. Codex implements supported changes, plans an experiment, or asks one focused follow-up.
+4. Codex records one recoverable request, acquires the account generation slot,
+   sends once through the short browser lease, and releases the browser.
+5. A current-task heartbeat captures the exact completed turn and classifies
+   model selection and execution/degradation separately.
+6. Codex verifies actionable claims against local code, tests, configs, data, and logs.
+7. Codex implements supported changes, plans an experiment, or asks one focused follow-up.
 
 ## Two external-review shapes
 

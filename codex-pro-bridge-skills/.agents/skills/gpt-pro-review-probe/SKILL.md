@@ -1,6 +1,6 @@
 ---
 name: gpt-pro-review-probe
-description: Fast lane for high-frequency, fine-grained, parallel GPT Pro review. Send one mature idea, research proposal, or atomic sub-task from one research line to GPT Pro as a standalone, single-round Review Probe that never touches the Bridge Project source-sync gate, so unrelated stale shared sources never block it and many probes run in parallel. Use when reviewing per-idea/per-proposal/per-task across several research lines at once; use gpt-pro-question-window or gpt-pro-project-workspace when a round genuinely needs shared durable Project context.
+description: Fast lane for high-frequency, fine-grained GPT Pro review. Prepare many independent standalone probes in parallel while serializing formal Pro generations through the recoverable Codex Pro Bridge, so unrelated Project sources never block them and degraded or interrupted rounds can resume safely. Use for one mature idea, research proposal, or atomic sub-task; use gpt-pro-project-workspace when a round needs shared durable Project context.
 ---
 
 # GPT Pro Review Probe
@@ -12,14 +12,17 @@ several research lines running in parallel.
 A **Review Probe** is a `standalone`, single-round Bridge Thread. It never
 attaches to a Bridge Project, so it never consults Project source-sync and is
 **never blocked when unrelated shared Project sources are stale or missing**.
-Each probe is its own thread with its own ledger, so many probes run in parallel
-safely; only browser-mutating critical sections are serialized by a
-repository-local advisory lease. Across worktrees, use one declared dispatcher.
+Each probe is its own thread with its own ledger. Evidence preparation and local
+verification run in parallel; formal Pro generations default to one at a time
+per ChatGPT account/workspace. Browser mutations use a separate short lease.
 
 This skill builds on [gpt-pro-question-window](../gpt-pro-question-window/SKILL.md)
 for the browser and persistence seam. Read
 [its bridge protocol](../gpt-pro-question-window/references/bridge_protocol.md)
 for IDs, events, and invariants.
+Read its
+[round-controller reference](../gpt-pro-question-window/references/round_controller.md)
+before submission or watcher creation.
 
 ## When to use it
 
@@ -60,9 +63,16 @@ round = disposable.
    It prints `probe_thread_id`, `codex_notes`, and `bundle`. It never runs
    source-sync and never asks for Project confirmation.
 
-2. Use the DevTools-first route in the Question Window's
-   [browser adapter reference](../gpt-pro-question-window/references/browser_adapters.md),
-   then acquire the browser lease before touching the signed-in Chrome profile:
+2. Use the printed `request_id` to create an operational round with the exact
+   prompt digest, then acquire the account/workspace generation slot. Leave the
+   probe queued when another formal Pro generation holds it. An expired slot
+   requires recovery inspection and is never stolen.
+
+3. Use the DevTools-first route in the Question Window's
+   [browser adapter reference](../gpt-pro-question-window/references/browser_adapters.md)
+   only from the task holding the host-global dispatcher claim. A
+   non-dispatcher task hands the prepared request to that exact task instead of
+   invoking DevTools. Then acquire the browser lease:
 
    ```bash
    python3 .agents/skills/gpt-pro-question-window/scripts/manage_browser_lease.py \
@@ -73,52 +83,55 @@ round = disposable.
 
    Chrome DevTools MCP is the primary route. The connector is permitted only
    for the documented pre-submit fallback. The lease serializes browser
-   mutations within this repository regardless of route. Across repositories,
-   worktrees, or SSH execution hosts that share one browser profile, use one
-   declared dispatcher.
+   mutations across local repositories and worktrees that share the user's
+   ordinary signed-in Chrome profile.
 
-3. Upload the bundle through DevTools MCP and a visible semantic control.
+4. Stage the bundle with the Question Window's `stage_bridge_attachment.py`
+   (`local` for a Mac bundle, `remote` for an SSH-hosted bundle), then upload
+   its returned OS-temp path through DevTools MCP and a visible semantic control.
    Record `devtools-mcp-upload-file`; record `codex-chrome-visible-menu` only
-   when the compatibility fallback was actually required. When execution is
-   remote over SSH, first stage the bundle on the browser host and verify its
-   digest. Then gate the submission with
-   `check_browser_preflight.py`, passing `--repo`, `--bridge-thread-id`, the
-   `--browser-lease-token`, `--expected-conversation-id`, and the
-   `--observed-conversation-id` read from the browser. The gate fails closed on
-   an expired/wrong lease, the wrong model, the wrong attachment, or the wrong
-   chat. Before Send, also save the existing turn IDs or cursor and prompt
-   digest as the pre-submit boundary.
+   when the compatibility fallback was actually required. The staging command
+   verifies the source and browser-host digests. Then gate the submission with
+   `check_browser_preflight.py`, passing `--repo`, `--bridge-thread-id`,
+   `--dispatcher-thread-id`, `--dispatcher-token`, `--browser-lease-token`, the
+   canonical `--bundle`, exact `--staged-file`, `--expected-conversation-id`,
+   and the `--observed-conversation-id` read from the browser. The gate fails closed on
+   an expired/wrong lease, the wrong model family/effort, the wrong attachment,
+   a service warning, or the wrong chat. Before Send, save the existing turn
+   IDs or cursor and prompt digest as the pre-submit boundary.
 
-4. Send once. After ChatGPT visibly accepts the prompt, record the submission
-   time and target turn ID when available, then release the lease immediately:
+5. Send once. After ChatGPT visibly accepts the prompt, record the millisecond
+   submission time, transition the round to `submitted`, and release the lease:
 
    ```bash
    python3 .agents/skills/gpt-pro-question-window/scripts/manage_browser_lease.py \
      --repo . release --token <token>
    ```
 
-5. Use Codex's native `read_thread` on the exact reserved ChatGPT conversation.
+6. Use Codex's native `read_thread` on the exact reserved ChatGPT conversation.
    Match the new user turn after the saved boundary, pin its remote turn ID, and
    accept only its `completed`, untruncated assistant reply. Then capture with
-   `save_bridge_turn.py --standalone --single-round --capture-route
+   `save_bridge_turn.py --request-id <request-id> --standalone --single-round --capture-route
    native-read-thread --remote-turn-id <turn-id>`. Do not pass the released
    browser token. Record the Codex verdict separately.
 
-6. If the native result is unavailable, ambiguous, or `truncated`, acquire a
+7. If the native result is unavailable, ambiguous, or `truncated`, acquire a
    new browser lease, locate the already pinned turn by ID and prompt
-   fingerprint, and capture its full direct reply with `--capture-route
+   fingerprint, save its exact rendered HTML through
+   `build_browser_capture_spec.py` plus `evaluate_script.filePath`, convert it
+   with `capture_browser_markdown.py`, and capture with `--capture-route
    browser-fallback --remote-turn-id <same-turn-id> --browser-lease-token
    <new-token>`. Never use the page's latest response by position. Release the
    new lease in all terminal paths.
 
-7. When an immediate bounded wait is not appropriate, use one current-task
-   heartbeat to poll `read_thread`. Keep unchanged checks silent and retain the
-   returned automation ID. On capture, explicit failure, or timeout, delete the
-   heartbeat before the single terminal notification. If deletion fails on any
-   terminal path, pause it and report that cleanup failure once. Never let it
-   resubmit.
+8. When an immediate bounded wait is not appropriate, generate one current-task
+   heartbeat with `manage_bridge_round.py watcher-spec`. Keep unchanged checks
+   silent and retain the automation ID. On terminal capture, classify execution
+   time, release the generation slot, delete the heartbeat, and notify once.
+   `<60000 ms` is `degraded_fast`; `>=60000 ms` is only `not_fast_degraded`.
+   Never let the watcher resubmit.
 
-`open_review_probe.py` prints a handoff outline for steps 2–7 with the resolved
+`open_review_probe.py` prints a handoff outline for steps 2–13 with the resolved
 thread id and bundle path; scheduled-task creation and browser actions remain
 host-tool operations rather than shell commands.
 
@@ -127,10 +140,10 @@ host-tool operations rather than shell commands.
 - **Runs in parallel across lines:** `open_review_probe.py` (snapshot + bundle),
   and the local Codex verdict. Each probe is a distinct thread with its own lock
   and ledger, so concurrent probes never fork or block each other.
-- **Serialized on one resource:** each browser-mutating window (attach/upload/
-  preflight/Send, plus a browser fallback capture) is behind the browser lease.
-  The lease is released while remote generations run, so several generations
-  may remain in flight without several workers driving Chrome at once.
+- **Serialized on two resources:** browser-mutating windows use the short browser
+  lease; accepted formal Pro generations use the account/workspace generation
+  slot. The browser is released during generation, but the generation slot is
+  held until the exact remote turn is terminal.
 - **SSH boundary:** remote repository or compute work may run in parallel, but
   the browser-host dispatcher owns staging, upload, preflight, and Send. A
   remote Codex process does not inherit access to the operator's local Chrome.
@@ -142,9 +155,10 @@ host-tool operations rather than shell commands.
 
 - A probe is standalone: it must not attach to a Bridge Project. `--standalone`
   fails closed if the thread is attached.
-- One round per probe: `--single-round` refuses a second exchange on a thread.
+- One round per probe: `--single-round` refuses a different request and permits
+  idempotent recovery of the same request ID.
 - Verify locally before trusting a result; keep GPT Pro output as pressure only.
-- Never send while another probe holds the browser lease; never bypass the
-  conversation-id gate.
+- Never send without both the account generation slot and browser lease; never
+  bypass the conversation-id gate.
 - Never capture "the latest turn" by position alone; bind the response to the
   post-submit remote turn ID. A truncated native item is not a raw answer.

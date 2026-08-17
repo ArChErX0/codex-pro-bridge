@@ -22,6 +22,11 @@ def main() -> int:
     parser.add_argument("--repo", default=".")
     parser.add_argument("--bridge-thread-id", required=True)
     parser.add_argument("--require-complete-rounds", action="store_true")
+    parser.add_argument(
+        "--require-verified-provenance",
+        action="store_true",
+        help="Fail when a modern request lacks exact model, turn, capture, or attachment provenance.",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     try:
@@ -29,6 +34,7 @@ def main() -> int:
             Path(args.repo),
             args.bridge_thread_id,
             require_complete_rounds=args.require_complete_rounds,
+            require_verified_provenance=args.require_verified_provenance,
         )
         if args.json:
             print(json.dumps(report, ensure_ascii=False, sort_keys=True))
@@ -36,7 +42,7 @@ def main() -> int:
             print(
                 "Verified bridge thread {thread_id}: {event_count} events, "
                 "{complete_rounds} complete rounds, {artifact_count} artifacts, "
-                "{bundle_count} bundles.".format(**report)
+                "{bundle_count} bundles, provenance {provenance_status}.".format(**report)
             )
         return 0
     except (BridgeError, OSError) as exc:

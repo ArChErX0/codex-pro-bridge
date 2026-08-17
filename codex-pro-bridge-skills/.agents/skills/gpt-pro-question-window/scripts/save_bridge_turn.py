@@ -123,6 +123,88 @@ def timestamp_value(value: str) -> dt.datetime | None:
     return dt.datetime.fromisoformat(value) if value else None
 
 
+def validate_request_id(value: str) -> str:
+    value = (value or "").strip()
+    if value and not re.fullmatch(
+        r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?", value
+    ):
+        raise BridgeError(
+            "--request-id must be 1-128 letters, digits, dots, underscores, or hyphens"
+        )
+    return value
+
+
+def resolve_model_selection(args: argparse.Namespace) -> dict[str, str]:
+    requested_family = args.requested_model_family.strip()
+    selected_family = args.selected_model_family.strip()
+    requested_effort = args.requested_effort.strip()
+    selected_effort = args.selected_effort.strip()
+    requested_legacy = args.requested_model.strip()
+    selected_legacy = args.selected_ui_label.strip()
+    modern = any((requested_family, selected_family, requested_effort, selected_effort))
+    if modern:
+        if requested_legacy or selected_legacy:
+            raise BridgeError(
+                "Use model-family/effort flags or legacy model flags, not both"
+            )
+        complete = all(
+            (requested_family, selected_family, requested_effort, selected_effort)
+        )
+        family_match = requested_family == selected_family
+        effort_match = requested_effort == selected_effort
+        status = (
+            "verified"
+            if complete and family_match and effort_match
+            else "mismatch"
+            if complete
+            else "unverified"
+        )
+        return {
+            "requested_model": requested_family,
+            "selected_ui_label": selected_effort,
+            "requested_model_family": requested_family,
+            "selected_model_family": selected_family,
+            "requested_effort": requested_effort,
+            "selected_effort": selected_effort,
+            "model_verification": status,
+        }
+    status = (
+        "verified"
+        if requested_legacy and selected_legacy and requested_legacy == selected_legacy
+        else "mismatch"
+        if requested_legacy and selected_legacy
+        else "unverified"
+    )
+    return {
+        "requested_model": requested_legacy,
+        "selected_ui_label": selected_legacy,
+        "requested_model_family": "",
+        "selected_model_family": "",
+        "requested_effort": requested_legacy,
+        "selected_effort": selected_legacy,
+        "model_verification": status,
+    }
+
+
+def classify_execution(
+    submitted_at: str,
+    response_completed_at: str,
+    explicit_degradation_reason: str,
+) -> tuple[int | None, str]:
+    if not submitted_at or not response_completed_at:
+        return None, "degraded_explicit" if explicit_degradation_reason else "unknown"
+    elapsed_ms = round(
+        (dt.datetime.fromisoformat(response_completed_at) - dt.datetime.fromisoformat(submitted_at))
+        .total_seconds()
+        * 1000
+    )
+    if elapsed_ms < 0:
+        raise BridgeError("--response-completed-at cannot precede --submitted-at")
+    if explicit_degradation_reason:
+        return elapsed_ms, "degraded_explicit"
+    return elapsed_ms, "degraded_fast" if elapsed_ms < 60_000 else "not_fast_degraded"
+
+
 def build_turn(
     *,
     number: int,
@@ -139,14 +221,23 @@ def build_turn(
     codex_notes: str,
     bundle_path: str,
     bundle_sha256: str,
+    request_id: str,
     submitted_at: str,
     generation_observed_at: str,
     response_completed_at: str,
     response_wait_seconds: int | None,
+    response_elapsed_ms: int | None,
     requested_model: str,
     selected_ui_label: str,
+    requested_model_family: str,
+    selected_model_family: str,
+    requested_effort: str,
+    selected_effort: str,
     model_verification: str,
+    execution_status: str,
+    explicit_degradation_reason: str,
     attachment_name: str,
+    attachment_sha256: str,
     attachment_verification: str,
     upload_control: str,
     capture_route: str,
@@ -175,11 +266,19 @@ def build_turn(
             f"- Codex Notes: {codex_notes or '-'}",
             f"- Bundle: {bundle_path or '-'}",
             f"- Bundle SHA-256: {bundle_sha256 or '-'}",
+            f"- Request ID: `{request_id or '-'}`",
             f"- Capture Fingerprint: {capture_fingerprint}",
             f"- Requested Model: {requested_model or '-'}",
             f"- Selected UI Label: {selected_ui_label or '-'}",
+            f"- Requested Model Family: {requested_model_family or '-'}",
+            f"- Selected Model Family: {selected_model_family or '-'}",
+            f"- Requested Effort: {requested_effort or '-'}",
+            f"- Selected Effort: {selected_effort or '-'}",
             f"- Model Verification: {model_verification}",
+            f"- Execution Status: {execution_status}",
+            f"- Explicit Degradation Reason: {explicit_degradation_reason or '-'}",
             f"- Attachment Name: {attachment_name or '-'}",
+            f"- Attachment SHA-256: {attachment_sha256 or '-'}",
             f"- Attachment Verification: {attachment_verification}",
             f"- Upload Control: {upload_control or '-'}",
             f"- Capture Route: {capture_route}",
@@ -188,6 +287,7 @@ def build_turn(
             f"- Generation observed at: {generation_observed_at or '-'}",
             f"- Response completed at: {response_completed_at or '-'}",
             f"- Response wait seconds: {response_wait_seconds if response_wait_seconds is not None else '-'}",
+            f"- Response elapsed milliseconds: {response_elapsed_ms if response_elapsed_ms is not None else '-'}",
             f"- Captured at: {saved_at}",
             "",
             "## Prompt",
@@ -220,6 +320,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Capture a GPT Pro answer as an immutable exchange.")
     parser.add_argument("--repo", default=".")
     parser.add_argument("--bridge-thread-id", required=True, help="Canonical task id.")
+    parser.add_argument(
+        "--request-id",
+        default="",
+        help="Stable end-to-end request id used for idempotent recovery and delivery.",
+    )
     parser.add_argument("--bridge-project-id", default="", help="Optional parent Bridge Project.")
     parser.add_argument(
         "--standalone",
@@ -275,7 +380,21 @@ def main() -> int:
     parser.add_argument("--response-completed-at", default="", help="Observed completed response time.")
     parser.add_argument("--requested-model", default="", help="Exact model label required by the task.")
     parser.add_argument("--selected-ui-label", default="", help="Exact selected model label visible before submission.")
+    parser.add_argument("--requested-model-family", default="")
+    parser.add_argument("--selected-model-family", default="")
+    parser.add_argument("--requested-effort", default="")
+    parser.add_argument("--selected-effort", default="")
+    parser.add_argument(
+        "--explicit-degradation-reason",
+        default="",
+        help="Observed downgrade, rate-limit, service, or account-protection signal.",
+    )
     parser.add_argument("--attachment-name", default="", help="Attachment name visible in the composer before submission.")
+    parser.add_argument(
+        "--attachment-sha256",
+        default="",
+        help="Verified SHA-256 of the staged file actually uploaded; required for filename aliases.",
+    )
     parser.add_argument("--upload-control", default="", help="Successful semantic upload route, for example visible-menu.")
     parser.add_argument(
         "--capture-route",
@@ -308,6 +427,7 @@ def main() -> int:
         if not repo.is_dir():
             raise BridgeError(f"Repository root is not a directory: {repo}")
         thread_id = validate_id(args.bridge_thread_id, "bridge thread id")
+        request_id = validate_request_id(args.request_id)
         codex_session_id = validate_id(
             args.codex_session_id or default_codex_session_id(thread_id), "Codex session id"
         )
@@ -342,20 +462,21 @@ def main() -> int:
             raise BridgeError("--response-completed-at cannot precede --submitted-at")
         if completed_value and generation_value and completed_value < generation_value:
             raise BridgeError("--response-completed-at cannot precede --generation-observed-at")
+        explicit_degradation_reason = args.explicit_degradation_reason.strip()
+        response_elapsed_ms, execution_status = classify_execution(
+            submitted_at, response_completed_at, explicit_degradation_reason
+        )
         response_wait_seconds = (
-            int((completed_value - submitted_value).total_seconds())
-            if completed_value and submitted_value
-            else None
+            response_elapsed_ms // 1000 if response_elapsed_ms is not None else None
         )
-        requested_model = args.requested_model.strip()
-        selected_ui_label = args.selected_ui_label.strip()
-        model_verification = (
-            "verified"
-            if requested_model and selected_ui_label and requested_model == selected_ui_label
-            else "mismatch"
-            if requested_model and selected_ui_label
-            else "unverified"
-        )
+        model = resolve_model_selection(args)
+        requested_model = model["requested_model"]
+        selected_ui_label = model["selected_ui_label"]
+        requested_model_family = model["requested_model_family"]
+        selected_model_family = model["selected_model_family"]
+        requested_effort = model["requested_effort"]
+        selected_effort = model["selected_effort"]
+        model_verification = model["model_verification"]
 
         bridge_dir = bridge_root(repo)
         codex_meta = parse_metadata(
@@ -411,11 +532,16 @@ def main() -> int:
                     "Browser lease conversation does not match --expected-conversation-id"
                 )
         if args.single_round:
-            prior_exchange = any(
-                event.get("event_type") == "gpt-exchange"
+            prior_exchanges = [
+                event
                 for event in load_events(bridge_dir, thread_id)
+                if event.get("event_type") == "gpt-exchange"
+            ]
+            same_request_replay = bool(request_id) and any(
+                event.get("data", {}).get("request_id") == request_id
+                for event in prior_exchanges
             )
-            if prior_exchange:
+            if prior_exchanges and not same_request_replay:
                 raise BridgeError(
                     f"--single-round: thread {thread_id} already has a captured "
                     "gpt-exchange; open a fresh probe thread for another round"
@@ -598,46 +724,90 @@ def main() -> int:
             bundle_path = repo_relative(bundle, repo)
             bundle_sha256 = file_sha256(bundle)
         attachment_name = args.attachment_name.strip()
-        attachment_verification = (
-            "verified"
-            if bundle_path and attachment_name == Path(bundle_path).name
-            else "mismatch"
-            if bundle_path and attachment_name
-            else "not-required"
-            if not bundle_path
-            else "unverified"
-        )
+        attachment_sha256 = args.attachment_sha256.strip().lower()
+        if attachment_sha256 and not re.fullmatch(r"[0-9a-f]{64}", attachment_sha256):
+            raise BridgeError("--attachment-sha256 must be a lowercase SHA-256 digest")
+        if not bundle_path:
+            if attachment_name or attachment_sha256:
+                raise BridgeError("Attachment observations require --bundle")
+            attachment_verification = "not-required"
+        elif not attachment_name:
+            attachment_verification = "unverified"
+        elif attachment_sha256:
+            attachment_verification = (
+                "verified" if attachment_sha256 == bundle_sha256 else "mismatch"
+            )
+        else:
+            attachment_verification = (
+                "verified" if attachment_name == Path(bundle_path).name else "unverified"
+            )
 
         title = one_line(args.turn_title or args.web_title or args.purpose or gpt_session_id, 120)
+        if request_id:
+            fingerprint_payload = {
+                "request_id": request_id,
+                "thread_id": thread_id,
+                "gpt_session_id": gpt_session_id,
+                "web_url": web_url,
+                "remote_turn_id": remote_turn_id,
+                "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+                "answer_sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest(),
+                "bundle_sha256": bundle_sha256,
+                "requested_model_family": requested_model_family,
+                "selected_model_family": selected_model_family,
+                "requested_effort": requested_effort,
+                "selected_effort": selected_effort,
+                "model_verification": model_verification,
+                "execution_status": execution_status,
+                "explicit_degradation_reason": explicit_degradation_reason,
+                "attachment_name": attachment_name,
+                "attachment_sha256": attachment_sha256,
+                "attachment_verification": attachment_verification,
+                "upload_control": args.upload_control.strip(),
+                "capture_route": capture_route,
+            }
+        else:
+            fingerprint_payload = {
+                "thread_id": thread_id,
+                "bridge_project_id": bridge_project_id,
+                "remote_project_id": remote_project_id,
+                "observed_workspace": observed_workspace,
+                "observed_account_label": observed_account_label,
+                "gpt_session_id": gpt_session_id,
+                "web_url": web_url,
+                "prompt": prompt,
+                "answer": answer,
+                "bundle_sha256": bundle_sha256,
+                "requested_model": requested_model,
+                "selected_ui_label": selected_ui_label,
+                "model_verification": model_verification,
+                "attachment_name": attachment_name,
+                "attachment_sha256": attachment_sha256,
+                "attachment_verification": attachment_verification,
+                "upload_control": args.upload_control.strip(),
+                "submitted_at": submitted_at if args.submitted_at.strip() else "",
+                "generation_observed_at": generation_observed_at,
+                "response_completed_at": response_completed_at,
+            }
         capture_fingerprint = hashlib.sha256(
             json.dumps(
-                {
-                    "thread_id": thread_id,
-                    "bridge_project_id": bridge_project_id,
-                    "remote_project_id": remote_project_id,
-                    "observed_workspace": observed_workspace,
-                    "observed_account_label": observed_account_label,
-                    "gpt_session_id": gpt_session_id,
-                    "web_url": web_url,
-                    "prompt": prompt,
-                    "answer": answer,
-                    "bundle_sha256": bundle_sha256,
-                    "requested_model": requested_model,
-                    "selected_ui_label": selected_ui_label,
-                    "model_verification": model_verification,
-                    "attachment_name": attachment_name,
-                    "attachment_verification": attachment_verification,
-                    "upload_control": args.upload_control.strip(),
-                    # An inferred capture time is not stable across retries. Callers can
-                    # pass an observed submission time to distinguish identical rounds.
-                    "submitted_at": submitted_at if args.submitted_at.strip() else "",
-                    "generation_observed_at": generation_observed_at,
-                    "response_completed_at": response_completed_at,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
+                fingerprint_payload, ensure_ascii=False, sort_keys=True
             ).encode("utf-8")
         ).hexdigest()
+        if request_id:
+            prior_request_events = [
+                event
+                for event in load_events(bridge_dir, thread_id)
+                if event.get("event_type") == "gpt-exchange"
+                and event.get("data", {}).get("request_id") == request_id
+            ]
+            if any(
+                event.get("dedupe_key") != f"gpt-exchange:{capture_fingerprint}"
+                for event in prior_request_events
+            ):
+                raise BridgeError(
+                    f"Request id {request_id!r} was already captured with different content"
+                )
         with file_lock(session_dir / ".session.lock"):
             turn_file = next(
                 (
@@ -671,14 +841,23 @@ def main() -> int:
                         codex_notes=codex_notes,
                         bundle_path=bundle_path,
                         bundle_sha256=bundle_sha256,
+                        request_id=request_id,
                         submitted_at=submitted_at,
                         generation_observed_at=generation_observed_at,
                         response_completed_at=response_completed_at,
                         response_wait_seconds=response_wait_seconds,
+                        response_elapsed_ms=response_elapsed_ms,
                         requested_model=requested_model,
                         selected_ui_label=selected_ui_label,
+                        requested_model_family=requested_model_family,
+                        selected_model_family=selected_model_family,
+                        requested_effort=requested_effort,
+                        selected_effort=selected_effort,
                         model_verification=model_verification,
+                        execution_status=execution_status,
+                        explicit_degradation_reason=explicit_degradation_reason,
                         attachment_name=attachment_name,
+                        attachment_sha256=attachment_sha256,
                         attachment_verification=attachment_verification,
                         upload_control=args.upload_control.strip(),
                         capture_route=capture_route,
@@ -753,6 +932,7 @@ def main() -> int:
             artifact={"kind": "gpt-pro-turn", "path": turn_rel, "sha256": file_sha256(turn_file)},
             data={
                 "turn": turn_rel,
+                "request_id": request_id,
                 "question": one_line(prompt),
                 "summary": one_line(summary),
                 "bundle": bundle_path,
@@ -763,8 +943,15 @@ def main() -> int:
                 "observed_account_label": observed_account_label,
                 "requested_model": requested_model,
                 "selected_ui_label": selected_ui_label,
+                "requested_model_family": requested_model_family,
+                "selected_model_family": selected_model_family,
+                "requested_effort": requested_effort,
+                "selected_effort": selected_effort,
                 "model_verification": model_verification,
+                "execution_status": execution_status,
+                "explicit_degradation_reason": explicit_degradation_reason,
                 "attachment_name": attachment_name,
+                "attachment_sha256": attachment_sha256,
                 "attachment_verification": attachment_verification,
                 "upload_control": args.upload_control.strip(),
                 "capture_route": capture_route,
@@ -773,6 +960,7 @@ def main() -> int:
                 "generation_observed_at": generation_observed_at,
                 "response_completed_at": response_completed_at,
                 "response_wait_seconds": response_wait_seconds,
+                "response_elapsed_ms": response_elapsed_ms,
                 "observed_conversation_id": conversation_id_from_url(web_url),
             },
             dedupe_key=f"gpt-exchange:{capture_fingerprint}",
