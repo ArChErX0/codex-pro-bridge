@@ -373,7 +373,8 @@ def markdown_code_fence(path: Path, content: str) -> str:
         "py": "python", "md": "markdown", "yml": "yaml", "jsonl": "json", "sh": "bash",
         "bash": "bash", "zsh": "bash", "ts": "typescript", "js": "javascript",
     }.get(extension, extension)
-    return f"```{language}\n{content.replace('```', '``\u200b`')}\n```"
+    escaped_content = content.replace("```", "``\u200b`")
+    return f"```{language}\n{escaped_content}\n```"
 
 
 def archive_name(path: Path, root: Path) -> str:

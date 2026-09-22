@@ -1297,9 +1297,10 @@ class BridgeProjectStore:
         if tasks:
             for task in sorted(tasks.values(), key=lambda item: item["updated_at"], reverse=True):
                 dependencies = ", ".join(task["depends_on"]) or "-"
+                escaped_title = task["title"].replace("|", "\\|")
                 lines.append(
                     f"| `{task['bridge_thread_id']}` | `{task['status']}` | "
-                    f"{task['title'].replace('|', '\\|')} | {dependencies} |"
+                    f"{escaped_title} | {dependencies} |"
                 )
         else:
             lines.append("| _None_ | - | - | - |")
