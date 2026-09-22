@@ -56,6 +56,12 @@ supported through optional, environment-backed host configuration. See
 [HOST_TOPOLOGIES.md](docs/HOST_TOPOLOGIES.md); the examples do not embed a user
 name, drive mapping, or machine-specific path.
 
+For delegated unattended rounds, copy
+[`agents/bridge-executor.toml.example`](agents/bridge-executor.toml.example) to
+`$CODEX_HOME/agents/bridge-executor.toml` and review its model and service-tier
+settings. This is deliberately optional and is never installed over an existing
+agent configuration.
+
 See [usage_prompts.md](examples/usage_prompts.md) for invocation examples.
 Operational details live in the relevant skills, the
 [canonical protocol](.agents/skills/gpt-pro-question-window/references/bridge_protocol.md),

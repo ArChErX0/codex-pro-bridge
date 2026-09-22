@@ -83,7 +83,7 @@ class BrowserHostTest(unittest.TestCase):
                 self.assertTrue(cleaned["cleaned"])
                 self.assertFalse(staged_path.exists())
 
-    def test_preflight_accepts_digest_verified_staging_mapping(self):
+    def test_staging_cli_accepts_digest_verified_mapping(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             source = root / "bundle.zip"
@@ -93,21 +93,14 @@ class BrowserHostTest(unittest.TestCase):
                 staged = stage_browser_file(source, thread_id="thread-1")
                 command = [
                     sys.executable,
-                    str(SCRIPTS / "check_browser_preflight.py"),
-                    "--requested-model",
-                    "Latest",
-                    "--selected-ui-label",
-                    "Latest",
-                    "--source-bundle",
+                    str(SCRIPTS / "manage_browser_staging.py"),
+                    "verify",
+                    "--source",
                     str(source),
-                    "--bundle",
+                    "--staged-path",
                     staged["staged_execution_path"],
-                    "--browser-upload-path",
+                    "--expected-browser-path",
                     staged["staged_browser_path"],
-                    "--attachment-name",
-                    staged["attachment_name"],
-                    "--upload-control",
-                    "devtools-mcp-upload-file",
                 ]
                 result = subprocess.run(
                     command,
@@ -117,10 +110,10 @@ class BrowserHostTest(unittest.TestCase):
                     env=os.environ.copy(),
                 )
                 observed = json.loads(result.stdout)
-                self.assertTrue(observed["ready"])
-                self.assertEqual(observed["staging_topology"], "wsl-windows")
+                self.assertTrue(observed["verified"])
+                self.assertEqual(observed["topology"], "wsl-windows")
                 self.assertEqual(
-                    observed["browser_upload_path"], staged["staged_browser_path"]
+                    observed["staged_browser_path"], staged["staged_browser_path"]
                 )
                 cleanup_staged_file(
                     staged["staged_execution_path"],

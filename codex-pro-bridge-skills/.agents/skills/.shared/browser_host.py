@@ -8,7 +8,7 @@ import os
 import re
 import shutil
 import tempfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Dict
 
 from bridge_store import BridgeError, file_lock, file_sha256
@@ -16,6 +16,31 @@ from host_config import BrowserHostConfig, load_browser_host_config
 
 
 STAGING_PREFIX = "codex-bridge-"
+DEFAULT_BROWSER_STAGING_ROOT = PureWindowsPath(r"C:\CodexBridge\staging")
+
+
+def staging_wsl_root() -> Path:
+    """Return the execution-host staging root.
+
+    The historical name is retained for protocol compatibility even when the
+    execution host is native Windows rather than WSL.
+    """
+
+    return load_browser_host_config().execution_root
+
+
+def staging_windows_root():
+    """Return the browser-visible Windows staging root.
+
+    A generic display-only default keeps attachment-free preflight compatible.
+    Every staging operation still calls ``load_browser_host_config`` and thus
+    requires an explicit mapping on non-Windows execution hosts.
+    """
+
+    try:
+        return load_browser_host_config().browser_root
+    except BridgeError:
+        return DEFAULT_BROWSER_STAGING_ROOT
 
 
 def _safe_component(value: str, *, fallback: str, limit: int) -> str:
@@ -100,7 +125,7 @@ def stage_browser_file(source: str | Path, *, thread_id: str) -> Dict[str, Any]:
                     temp_path.unlink()
                 raise
 
-    return {
+    result = {
         "ready": True,
         "topology": config.topology,
         "config_source": config.source,
@@ -112,6 +137,11 @@ def stage_browser_file(source: str | Path, *, thread_id: str) -> Dict[str, Any]:
         "size_bytes": target.stat().st_size,
         "reused": reused,
     }
+    # Keep the established receipt field names while exposing topology-neutral
+    # names to new callers.
+    result["staged_wsl_path"] = result["staged_execution_path"]
+    result["staged_windows_path"] = result["staged_browser_path"]
+    return result
 
 
 def verify_staged_file(
@@ -149,7 +179,7 @@ def verify_staged_file(
     browser_path = browser_path_for(path, config=config)
     if expected_browser_path and expected_browser_path != browser_path:
         raise BridgeError("Observed browser upload path does not match the configured mapping")
-    return {
+    result = {
         "verified": True,
         "topology": config.topology,
         "source_path": resolved_source,
@@ -160,6 +190,9 @@ def verify_staged_file(
         "attachment_name": path.name,
         "size_bytes": path.stat().st_size,
     }
+    result["staged_wsl_path"] = result["staged_execution_path"]
+    result["staged_windows_path"] = result["staged_browser_path"]
+    return result
 
 
 def cleanup_staged_file(staged_path: str | Path, *, expected_sha256: str) -> Dict[str, Any]:
@@ -175,7 +208,7 @@ def cleanup_staged_file(staged_path: str | Path, *, expected_sha256: str) -> Dic
         size = path.stat().st_size
         browser_path = str(config.browser_root / path.name)
         path.unlink()
-    return {
+    result = {
         "cleaned": True,
         "topology": config.topology,
         "staged_execution_path": str(path),
@@ -183,3 +216,6 @@ def cleanup_staged_file(staged_path: str | Path, *, expected_sha256: str) -> Dic
         "sha256": actual,
         "size_bytes": size,
     }
+    result["staged_wsl_path"] = result["staged_execution_path"]
+    result["staged_windows_path"] = result["staged_browser_path"]
+    return result

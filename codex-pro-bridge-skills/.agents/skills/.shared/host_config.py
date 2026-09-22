@@ -16,6 +16,8 @@ EXECUTION_ROOT_ENV = "CODEX_BRIDGE_STAGING_EXECUTION_ROOT"
 BROWSER_ROOT_ENV = "CODEX_BRIDGE_STAGING_BROWSER_ROOT"
 LOCK_PATH_ENV = "CODEX_BRIDGE_STAGING_LOCK"
 TOPOLOGIES = {"windows-native", "wsl-windows"}
+LEGACY_EXECUTION_ROOT_ENV = "CODEX_BRIDGE_STAGING_WSL_ROOT"
+LEGACY_BROWSER_ROOT_ENV = "CODEX_BRIDGE_STAGING_WINDOWS_ROOT"
 
 
 @dataclass(frozen=True)
@@ -104,6 +106,38 @@ def _windows_default() -> BrowserHostConfig:
     )
 
 
+def _legacy_environment() -> BrowserHostConfig | None:
+    """Load the pre-config-file path variables when both halves are explicit."""
+
+    execution_value = os.environ.get(LEGACY_EXECUTION_ROOT_ENV, "").strip()
+    browser_value = os.environ.get(LEGACY_BROWSER_ROOT_ENV, "").strip()
+    if not execution_value and not browser_value:
+        return None
+    if not execution_value or not browser_value:
+        raise BridgeError(
+            f"{LEGACY_EXECUTION_ROOT_ENV} and {LEGACY_BROWSER_ROOT_ENV} must be set together"
+        )
+    execution_root = _absolute_execution_path(
+        execution_value, field=LEGACY_EXECUTION_ROOT_ENV
+    )
+    browser_root = PureWindowsPath(browser_value)
+    if not browser_root.is_absolute():
+        raise BridgeError(f"{LEGACY_BROWSER_ROOT_ENV} must be an absolute Windows path")
+    lock_value = os.environ.get(LOCK_PATH_ENV, "").strip()
+    lock_path = (
+        _absolute_execution_path(lock_value, field=LOCK_PATH_ENV)
+        if lock_value
+        else execution_root.parent / "browser-staging.lock"
+    )
+    return BrowserHostConfig(
+        topology="windows-native" if os.name == "nt" else "wsl-windows",
+        execution_root=execution_root,
+        browser_root=browser_root,
+        lock_path=lock_path,
+        source="legacy-environment",
+    )
+
+
 def load_browser_host_config() -> BrowserHostConfig:
     """Load the optional config, or the safe Windows-native default.
 
@@ -117,6 +151,9 @@ def load_browser_host_config() -> BrowserHostConfig:
         if not path.is_absolute():
             raise BridgeError(f"{CONFIG_ENV} must be an absolute path")
         return _configured(path.resolve())
+    legacy = _legacy_environment()
+    if legacy is not None:
+        return legacy
     if os.name == "nt":
         return _windows_default()
     raise BridgeError(

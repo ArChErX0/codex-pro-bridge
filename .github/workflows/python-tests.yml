@@ -22,7 +22,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Run unit tests
         working-directory: codex-pro-bridge-skills
-        run: python -m unittest discover -s tests -p "test_*.py"
+        run: |
+          python -m unittest discover -s tests -p "test_*.py"
+          python -m unittest discover -s .agents/skills/gpt-pro-question-window/tests -p "test_*.py"
+          python -m unittest discover -s .agents/skills/gpt-pro-project-workspace/tests -p "test_*.py"
+          python .agents/skills/gpt-pro-question-window/scripts/test_prepare_review.py
       - name: Compile Python sources
         working-directory: codex-pro-bridge-skills
         shell: bash
