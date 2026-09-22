@@ -26,12 +26,31 @@ The default supported topology requires the MCP host and browser host to be the 
 
 | Topology | Bridge behavior |
 | --- | --- |
-| Local Codex + local MCP/Chrome + local repository | Use the local absolute bundle path directly. |
+| Windows-native Codex + Windows MCP/Chrome | Run the helper from the Codex workspace root. Its default staging directory stays inside that workspace, which the MCP is allowed to read. |
+| WSL Codex + Windows MCP/Chrome | Use an explicit paired WSL/Windows staging-root mapping that is also an MCP workspace root. Never derive one namespace from the other. |
+| Other local Codex + local MCP/Chrome + local repository | Use the local absolute bundle path directly. |
 | Local Codex + local MCP/Chrome + repository or compute reached through SSH | Keep browser control local. Fetch only the approved bundle or evidence to a local staging path, compare its SHA-256 across the handoff, then upload that local path. |
 | Remote Codex + remote MCP/Chrome on the same graphical host | Use only after the remote Chrome profile, remote-debugging permission, and upload path are visibly verified. |
 | Remote Codex + local Chrome on another machine | Treat as unsupported by default. `--autoConnect` searches the MCP host, not the operator's Mac. Prefer a local Bridge dispatcher. An explicitly authorized SSH tunnel plus `--browser-url` may support inspection, but do not submit until the debugging endpoint is loopback-only and the bundle path is proven readable by the browser host. |
 
 SSH access to an execution host is not browser access. Never expose a Chrome debugging port on a public or shared interface. Key browser serialization by the browser host/profile; when the repository-local lease cannot coordinate multiple repositories or hosts, funnel mutations through one declared dispatcher.
+
+For Windows-native and WSL-to-Windows setup, follow
+[`docs/HOST_TOPOLOGIES.md`](../../../../docs/HOST_TOPOLOGIES.md). Stage one bundle
+before acquiring the browser lease:
+
+```text
+python .agents/skills/gpt-pro-question-window/scripts/manage_browser_staging.py stage \
+  --source <absolute-bundle-path> \
+  --bridge-thread-id <bridge-thread-id>
+```
+
+Use `staged_browser_path` for MCP or the file chooser. Pass
+`staged_execution_path` as `--bundle`, the original path as `--source-bundle`,
+and `staged_browser_path` as `--browser-upload-path` to preflight. After the
+terminal browser path, run the script's `cleanup` command with the exact staged
+SHA-256. Cleanup refuses a renamed, relocated, or modified target and never
+recursively clears the staging directory.
 
 ## Chrome DevTools MCP
 
@@ -40,7 +59,7 @@ Treat MCP configuration as discoverability, not connection proof. Acquire the br
 1. Let the user approve Chrome's remote-debugging prompt when required. Stop for login, account security, CAPTCHA, or unexpected profile selection.
 2. Call `list_pages`, choose the page whose URL contains the exact saved conversation or Project ID, and call `select_page`. Titles and MCP page IDs are not durable conversation identity.
 3. Call `take_snapshot` and locate ChatGPT's visible attachment control or its associated file input.
-4. Confirm that the absolute Task Bundle path is available on the browser/MCP host, then call `upload_file` with that path and the snapshot UID. The tool accepts a file input or a visible element that opens the chooser.
+4. Confirm that the absolute Task Bundle path is available on the browser/MCP host, then call `upload_file` with the direct path or staging result's `staged_browser_path` and the snapshot UID. The tool accepts a file input or a visible element that opens the chooser.
 5. Wait for the exact filename, then take another snapshot and verify the attachment chip. Use redacted network diagnostics only when the upload fails or stalls.
 6. Pass `--upload-control devtools-mcp-upload-file` to preflight and exchange capture.
 7. For a dry run, remove the attachment and verify an empty composer.

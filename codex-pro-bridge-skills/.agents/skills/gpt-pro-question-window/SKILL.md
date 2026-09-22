@@ -39,9 +39,12 @@ For a normal question, read and use [references/question_window_prompt.md](refer
 
 Read [references/browser_adapters.md](references/browser_adapters.md) before attaching a file, crossing an SSH boundary, or performing browser fallback. Use Chrome DevTools MCP as the primary route. Use the Codex Chrome connector only when DevTools MCP is unavailable or fails before upload/Send while the composer remains empty. Both routes use visible semantic controls and the same browser lease.
 
-Build the zip locally and keep its output path absolute. Record the successful route as `devtools-mcp-upload-file` or `codex-chrome-visible-menu`. Verify the exact filename or attachment chip before submission and remove it after a dry run.
+Build the zip locally and keep its output path absolute. For Windows-native or WSL-to-Windows browser hosting, use the configured digest-verified staging flow from `references/browser_adapters.md`; do not guess or rewrite drive mappings. Record the successful route as `devtools-mcp-upload-file` or `codex-chrome-visible-menu`. Verify the exact filename or attachment chip before submission and remove it after a dry run.
 
 Before submission, run:
+
+The example uses the POSIX `python3` launcher. On native Windows, use `py -3`
+or the configured Python 3.10+ executable for the same script.
 
 ```bash
 python3 .agents/skills/gpt-pro-question-window/scripts/check_browser_preflight.py \

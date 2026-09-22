@@ -18,6 +18,7 @@ from bridge_store import (  # noqa: E402
     file_sha256,
     now_iso,
 )
+from browser_host import verify_staged_file  # noqa: E402
 from project_store import REMOTE_PROJECT_ID_RE  # noqa: E402
 
 
@@ -34,7 +35,21 @@ def main() -> int:
     )
     parser.add_argument("--requested-model", required=True)
     parser.add_argument("--selected-ui-label", required=True)
-    parser.add_argument("--bundle", default="")
+    parser.add_argument(
+        "--source-bundle",
+        default="",
+        help="Original bundle before optional browser-host staging.",
+    )
+    parser.add_argument(
+        "--bundle",
+        default="",
+        help="Absolute execution-host path uploaded directly or returned by staging.",
+    )
+    parser.add_argument(
+        "--browser-upload-path",
+        default="",
+        help="Browser-host path returned by manage_browser_staging.py.",
+    )
     parser.add_argument("--attachment-name", default="")
     parser.add_argument("--upload-control", default="")
     parser.add_argument("--expected-project-id", default="")
@@ -67,6 +82,7 @@ def main() -> int:
             )
 
         raw_bundle = Path(args.bundle).expanduser() if args.bundle else None
+        raw_source = Path(args.source_bundle).expanduser() if args.source_bundle else None
         if raw_bundle and not raw_bundle.is_absolute():
             raise BridgeError("--bundle must be an absolute path for Chrome upload")
         bundle_path = raw_bundle.resolve() if raw_bundle else None
@@ -74,20 +90,39 @@ def main() -> int:
         upload_control = args.upload_control.strip()
         attachment_sha256 = ""
         attachment_verification = "not-required"
+        browser_upload_path = args.browser_upload_path.strip()
+        staging_topology = "direct"
         if bundle_path:
             if not bundle_path.is_file():
                 raise BridgeError(f"Bundle does not exist: {bundle_path}")
-            if attachment_name != bundle_path.name:
+            if raw_source or browser_upload_path:
+                if not raw_source or not raw_source.is_absolute():
+                    raise BridgeError(
+                        "--source-bundle must be absolute when browser staging is used"
+                    )
+                verified = verify_staged_file(
+                    bundle_path,
+                    source_path=raw_source,
+                    expected_browser_path=browser_upload_path,
+                )
+                expected_name = verified["attachment_name"]
+                attachment_sha256 = verified["staged_sha256"]
+                browser_upload_path = verified["staged_browser_path"]
+                staging_topology = verified["topology"]
+            else:
+                expected_name = bundle_path.name
+                attachment_sha256 = file_sha256(bundle_path)
+                browser_upload_path = str(bundle_path)
+            if attachment_name != expected_name:
                 raise BridgeError(
-                    f"Visible attachment {attachment_name!r} does not match bundle {bundle_path.name!r}"
+                    f"Visible attachment {attachment_name!r} does not match bundle {expected_name!r}"
                 )
             if not upload_control:
                 raise BridgeError("--upload-control is required when a bundle is attached")
             if "hidden" in upload_control.lower():
                 raise BridgeError("Direct hidden-input clicks are not an accepted upload control")
-            attachment_sha256 = file_sha256(bundle_path)
             attachment_verification = "verified"
-        elif attachment_name or upload_control:
+        elif raw_source or browser_upload_path or attachment_name or upload_control:
             raise BridgeError("Attachment observations require --bundle")
 
         expected_project_id = args.expected_project_id.strip()
@@ -192,6 +227,10 @@ def main() -> int:
                     "attachment_name": attachment_name,
                     "attachment_sha256": attachment_sha256,
                     "attachment_verification": attachment_verification,
+                    "source_bundle": str(raw_source.resolve()) if raw_source else "",
+                    "bundle": str(bundle_path) if bundle_path else "",
+                    "browser_upload_path": browser_upload_path,
+                    "staging_topology": staging_topology,
                     "upload_control": upload_control,
                     "expected_project_id": expected_project_id,
                     "observed_project_id": observed_project_id,

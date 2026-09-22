@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
-import fcntl
 import hashlib
 import json
 import os
@@ -18,6 +17,11 @@ import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Sequence
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 
 SCHEMA_VERSION = 1
@@ -153,12 +157,26 @@ def atomic_write_text(path: Path, text: str) -> None:
 @contextlib.contextmanager
 def file_lock(path: Path) -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    if os.name == "nt":
+        with path.open("a+b") as handle:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        with path.open("a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 # --- Host-local browser lease -------------------------------------------------
