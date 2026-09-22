@@ -22,7 +22,7 @@ REMOTE_B = "g-p-" + "b" * 32
 class PrepareBridgeExecutionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
-        self.repo = Path(self.temp.name)
+        self.repo = Path(self.temp.name).resolve()
         self.question = self.repo / "question.md"
         self.question.write_text("请检查证据边界。\n", encoding="utf-8")
         self.notes = self.repo / "notes.md"

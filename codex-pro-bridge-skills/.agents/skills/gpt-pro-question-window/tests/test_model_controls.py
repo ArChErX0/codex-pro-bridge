@@ -99,7 +99,7 @@ class ModelControlsTest(unittest.TestCase):
     def test_cli_persists_receipt_without_overwrite(self) -> None:
         script = Path(__file__).resolve().parents[1] / "scripts" / "validate_model_controls.py"
         with tempfile.TemporaryDirectory() as directory:
-            owner = Path(directory)
+            owner = Path(directory).resolve()
             trace = owner / "trace.json"
             receipt = owner / "receipt.json"
             trace.write_text(json.dumps(self.trace()), encoding="utf-8")

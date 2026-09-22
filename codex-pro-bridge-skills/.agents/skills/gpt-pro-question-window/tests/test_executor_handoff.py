@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -11,17 +12,21 @@ from bridge_store import BridgeError
 from executor_handoff import validate_handoff
 
 
+TEST_ROOT = Path(tempfile.gettempdir()).resolve() / "codex-bridge-handoff-tests"
+TEST_REPO = TEST_ROOT / "repo"
+
+
 def base(**changes):
     value = {
         "schema_version": "executor_handoff/v2",
         "mode": "prepare-and-run",
-        "repo": "/tmp/repo",
+        "repo": str(TEST_REPO),
         "bridge_thread_id": "bridge-thread",
-        "request_file": "/tmp/repo/request.json",
+        "request_file": str(TEST_REPO / "request.json"),
         "request_sha256": "a" * 64,
         "allow_send": True,
         "allowed_external_actions": ["send-once", "capture-reply"],
-        "expected_output_dir": "/tmp/repo/output",
+        "expected_output_dir": str(TEST_REPO / "output"),
         "requested_model": "最新",
         "model_selection_kind": "latest-alias",
         "requested_thinking_intensity": "高",
@@ -78,9 +83,9 @@ class ExecutorHandoffTests(unittest.TestCase):
 
     def test_handoff_paths_stay_inside_repo(self):
         with self.assertRaisesRegex(BridgeError, "request_file must stay"):
-            validate_handoff(base(request_file="/tmp/outside-request.json"))
+            validate_handoff(base(request_file=str(TEST_ROOT / "outside-request.json")))
         with self.assertRaisesRegex(BridgeError, "expected_output_dir must stay"):
-            validate_handoff(base(expected_output_dir="/tmp/outside-output"))
+            validate_handoff(base(expected_output_dir=str(TEST_ROOT / "outside-output")))
 
     def test_project_identity_is_all_or_nothing(self):
         with self.assertRaisesRegex(BridgeError, "both bridge_project_id"):

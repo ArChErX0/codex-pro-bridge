@@ -30,11 +30,11 @@ from browser_identity import (
 class BrowserBootstrapTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
-        self.repo = Path(self.temp.name) / "repo"
+        self.repo = Path(self.temp.name).resolve() / "repo"
         self.repo.mkdir()
         self.previous_state_dir = os.environ.get("CODEX_PRO_BRIDGE_BROWSER_STATE_DIR")
         os.environ["CODEX_PRO_BRIDGE_BROWSER_STATE_DIR"] = str(
-            Path(self.temp.name) / "browser-state"
+            Path(self.temp.name).resolve() / "browser-state"
         )
 
     def tearDown(self) -> None:

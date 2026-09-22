@@ -23,7 +23,7 @@ from bridge_store import BridgeError, append_event, file_sha256  # noqa: E402
 class AttemptEdgeTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
-        self.repo = Path(self.temp.name) / "repo"
+        self.repo = Path(self.temp.name).resolve() / "repo"
         self.repo.mkdir()
 
     def tearDown(self) -> None:

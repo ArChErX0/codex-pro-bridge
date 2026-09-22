@@ -16,7 +16,7 @@ BUILDER = SCRIPT.resolve().parents[2] / "bundle-algorithm-context/scripts/build_
 class PrepareReviewTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         (self.root / "facts.md").write_text("当前原始说明；不能省略否定条件。\n")
         (self.root / "evidence.md").write_text("完整证据\n")
         self.request = {"repo": str(self.root), "bridge_thread_id": "fixture-review",

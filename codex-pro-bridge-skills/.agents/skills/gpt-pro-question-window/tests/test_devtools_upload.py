@@ -154,7 +154,7 @@ class DevToolsUploadTests(unittest.TestCase):
     def test_cli_emits_structured_native_chooser_block(self) -> None:
         script = Path(__file__).resolve().parents[1] / "scripts" / "validate_devtools_upload.py"
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             plan_path = root / "plan.json"
             result_path = root / "result.json"
             plan_path.write_text(json.dumps(self.plan), encoding="utf-8")
@@ -180,7 +180,7 @@ class DevToolsUploadTests(unittest.TestCase):
     def test_cli_can_create_plan_under_expected_output_owner(self) -> None:
         script = Path(__file__).resolve().parents[1] / "scripts" / "validate_devtools_upload.py"
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             owner = root / "preparation"
             owner.mkdir()
             plan_path = owner / "upload-action-plan.json"
@@ -265,7 +265,7 @@ class DevToolsUploadTests(unittest.TestCase):
         previous_env = {key: os.environ.get(key) for key in env_keys}
         try:
             with tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
+                root = Path(directory).resolve()
                 repo = root / "repo"
                 repo.mkdir()
                 state = root / "browser-state"

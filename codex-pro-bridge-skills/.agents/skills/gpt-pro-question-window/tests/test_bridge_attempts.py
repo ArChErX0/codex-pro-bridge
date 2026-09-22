@@ -26,7 +26,7 @@ class AttemptTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.repo = Path(self.temp.name)
+        self.repo = Path(self.temp.name).resolve()
         self.thread = "test-attempt"
         self.prompt = "请核对这个局部问题。\n"
         self.url = "https://chatgpt.com/c/test-conversation"
@@ -59,6 +59,11 @@ class AttemptTests(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, expected, result.stderr)
         return result
+
+    def mcp_temp_root(self):
+        if os.name == "nt":
+            return self.repo / ".codex" / "codex-pro-bridge" / "browser-staging"
+        return staging_windows_root()
 
     def test_send_intent_survives_process_restart_and_blocks_empty_composer(self):
         self.prepare()
@@ -303,7 +308,7 @@ new Function('tools', 'text', 'return (async () => {' + source + '})();')(tools,
             "--observed-conversation-id", "test-conversation", "--prompt-sha256", digest(self.prompt),
             "--requested-model", "GPT-5.6 Sol", "--selected-ui-label", "GPT-5.6 Sol",
             "--requested-thinking-intensity", "6 Pro", "--selected-thinking-intensity", "6 Pro",
-            "--mcp-host-os", "windows", "--browser-host-os", "windows", "--mcp-temp-root", staging_windows_root())
+            "--mcp-host-os", "windows", "--browser-host-os", "windows", "--mcp-temp-root", self.mcp_temp_root())
         self.preflight = json.loads(pre.stdout)
         preflight_file = self.repo / "preflight.json"
         preflight_file.write_text(pre.stdout, encoding="utf-8")

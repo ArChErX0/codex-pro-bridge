@@ -24,7 +24,7 @@ from bridge_store import bridge_root, write_bound_metadata
 class SaveBridgeTurnProvenanceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
-        self.repo = Path(self.temp.name)
+        self.repo = Path(self.temp.name).resolve()
         self.thread = "provenance-thread"
         self.prompt = "请核对附件。"
         self.answer = "完整回答。"
