@@ -209,6 +209,19 @@ Repository-local installation:
 ./codex-pro-bridge-skills/install.sh --repo /path/to/repo
 ```
 
+Windows PowerShell supports both installation scopes:
+
+```powershell
+.\codex-pro-bridge-skills\install.ps1 -Global
+.\codex-pro-bridge-skills\install.ps1 -Repo C:\path\to\repo
+```
+
+For native Windows execution or WSL Codex with Windows MCP/Chrome, configure the
+optional digest-verified staging topology in
+[`HOST_TOPOLOGIES.md`](codex-pro-bridge-skills/docs/HOST_TOPOLOGIES.md). The
+checked-in examples contain environment-variable names only; keep concrete paths
+in private host configuration.
+
 Restart Codex or open a new task if an existing task does not discover the updated skills.
 
 ### Ask a normal question

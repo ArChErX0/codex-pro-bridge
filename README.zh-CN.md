@@ -200,6 +200,18 @@ Follow-up 通常只复用当前 Codex notes 和精简任务历史。只有文件
 ./codex-pro-bridge-skills/install.sh --repo /path/to/repo
 ```
 
+Windows PowerShell 同时支持全局安装和指定仓库安装：
+
+```powershell
+.\codex-pro-bridge-skills\install.ps1 -Global
+.\codex-pro-bridge-skills\install.ps1 -Repo C:\path\to\repo
+```
+
+Windows 原生运行，以及 WSL 侧 Codex 配合 Windows 侧 MCP/Chrome，均可按
+[`HOST_TOPOLOGIES.md`](codex-pro-bridge-skills/docs/HOST_TOPOLOGIES.md) 配置带
+SHA-256 校验的可选暂存拓扑。仓库中的示例只记录环境变量名；具体路径应保留在
+主机私有配置中。
+
 如果已有 Codex task 没有发现更新后的 skills，请重启 Codex 或新建 task。
 
 ### 提一个普通问题
