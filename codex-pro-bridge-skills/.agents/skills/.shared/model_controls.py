@@ -9,6 +9,7 @@ from bridge_store import BridgeError
 
 MODEL_SELECTION_KINDS = ("exact", "latest-alias")
 MODEL_CONTROL_TRACE_V1 = "model-controls/v1"
+MODEL_CONTROL_TRACE_V2 = "model-controls/v2"
 
 
 def assess_model_selection(requested: str, selected: str, kind: str) -> str:
@@ -48,8 +49,12 @@ def validate_model_control_trace(trace: Mapping[str, Any]) -> dict[str, Any]:
 
     if not isinstance(trace, Mapping):
         raise BridgeError("model-control trace must be an object")
-    if _required_text(trace, "schema_version") != MODEL_CONTROL_TRACE_V1:
+    schema = _required_text(trace, "schema_version")
+    if schema not in (MODEL_CONTROL_TRACE_V1, MODEL_CONTROL_TRACE_V2):
         raise BridgeError("unsupported model-control trace schema")
+    nested = schema == MODEL_CONTROL_TRACE_V2
+    if nested and trace.get("control_layout") != "nested-slider":
+        raise BridgeError("v2 requires the nested-slider control layout")
     page_id = _required_text(trace, "page_id")
     if not page_id.isdecimal() or int(page_id) <= 0:
         raise BridgeError("model-control page_id must be a positive integer")
@@ -100,7 +105,7 @@ def validate_model_control_trace(trace: Mapping[str, Any]) -> dict[str, Any]:
         requested_model, initial_model, kind
     ) not in {"unverified", "mismatch"}
     model_expected = 0 if initial_model_matches else 1
-    if normalized_counts["model_menu_open"] != model_expected:
+    if normalized_counts["model_menu_open"] != (2 if nested else model_expected):
         raise BridgeError("model menu open count does not match the initial model state")
     if normalized_counts["model_selection"] != model_expected:
         raise BridgeError("model selection count does not match the initial model state")
@@ -108,14 +113,15 @@ def validate_model_control_trace(trace: Mapping[str, Any]) -> dict[str, Any]:
         if any(
             normalized_counts[field] != 0
             for field in (
-                "thinking_control_open",
                 "thinking_adjustment",
                 "thinking_progress_read",
             )
         ):
             raise BridgeError("matching thinking intensity must not be adjusted")
+        if normalized_counts["thinking_control_open"] != (2 if nested else 0):
+            raise BridgeError("unexpected thinking control open count")
     else:
-        if normalized_counts["thinking_control_open"] != 1:
+        if normalized_counts["thinking_control_open"] != (3 if nested else 1):
             raise BridgeError("thinking control may be opened only once when adjustment is needed")
         adjustments = normalized_counts["thinking_adjustment"]
         if not 1 <= adjustments <= 6:
@@ -123,7 +129,8 @@ def validate_model_control_trace(trace: Mapping[str, Any]) -> dict[str, Any]:
         if normalized_counts["thinking_progress_read"] != adjustments:
             raise BridgeError("each thinking adjustment requires one progress read")
     return {
-        "schema_version": MODEL_CONTROL_TRACE_V1,
+        **({"control_layout": "nested-slider"} if nested else {}),
+        "schema_version": schema,
         "page_id": page_id,
         "tab_owner_token": owner,
         "observed_page_url": page_url,

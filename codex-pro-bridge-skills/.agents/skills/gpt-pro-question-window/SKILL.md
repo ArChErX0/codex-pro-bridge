@@ -31,6 +31,12 @@ skill or into a custom prompt.
 
 ## Main-agent responsibilities
 
+当当前环境已配置并验收 `codex-pro-bridge` 执行 MCP 时，优先使用
+[mcp_runtime.md](references/mcp_runtime.md) 的 `bridge_submit → bridge_wait → bridge_result`。
+父代理仍使用下述确定性准备与最终核验；机械步骤由持久 worker 执行，不再分派 Executor。
+运行时缺失或尚未验收时使用下面的 Agent 路线。任务一旦提交，沿用其 job/attempt，
+不能因等待超时或阻塞切换另一条路线重发。
+
 1. Define the exact question, desired output, and whether external reasoning is useful.
    Use `resolve_bridge_route.py` with `--external-reasoning` or `--local-only`. A
    `local_only` result ends this route without spawning an Executor.

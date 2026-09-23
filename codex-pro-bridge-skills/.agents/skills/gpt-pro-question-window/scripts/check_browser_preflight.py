@@ -54,7 +54,7 @@ def main() -> int:
     parser.add_argument(
         "--model-control-receipt",
         default="",
-        help="Repo-local model-controls/v1 receipt for the bounded pre-Send control transaction.",
+        help="Repo-local model-controls/v1 or v2 receipt for the bounded pre-Send control transaction.",
     )
     parser.add_argument("--source-bundle", default="")
     parser.add_argument("--bundle", default="", help="Absolute WSL path of the G-drive staged file.")

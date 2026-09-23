@@ -236,6 +236,21 @@ SHA-256 校验的可选暂存拓扑。仓库中的示例只记录环境变量名
 
 如果已有 Codex task 没有发现更新后的 skills，请重启 Codex 或新建 task。
 
+### 可选：程序化 MCP 执行器
+
+本分支包含完整 Bridge、Windows/WSL 安装与暂存适配，以及新的程序化运行时；
+可以独立 checkout 和安装，无需先应用其他 PR。已有专用 Agent 路线继续保留。
+
+程序化路线使用 `bridge_submit → bridge_wait → bridge_result`，由持久 worker 执行打包、
+上传、发送、等待和原文回收；主代理保留证据选择与最终核验。可选持久连接服务让不同 worker
+复用同一个已授权 DevTools 连接，减少重复启动和授权等待。
+
+按 [运行时配置说明](codex-pro-bridge-skills/.agents/skills/gpt-pro-question-window/references/mcp_runtime.md)
+填写私有配置；[示例](codex-pro-bridge-skills/config/bridge-runtime.json.example) 不含个人路径。
+Windows 原生使用 Windows Python、Node 和路径；WSL 路线使用 WSL Python 与 Windows MCP/Chrome，
+暂存映射仍按上述主机拓扑配置。两种方式均需自己的实际 UI profile、Chrome 登录与调试授权，
+安装器不会自动启用 MCP 或覆盖用户配置。当前适配器要求 DevTools 工具支持显式 `pageId`。
+
 ### 提一个普通问题
 
 ```text

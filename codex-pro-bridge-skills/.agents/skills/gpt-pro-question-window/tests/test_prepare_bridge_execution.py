@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,17 @@ REMOTE_B = "g-p-" + "b" * 32
 
 
 class PrepareBridgeExecutionTests(unittest.TestCase):
+    def test_published_hashes_match_disk_bytes(self):
+        result = self.call()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = json.loads(result.stdout)
+        handoff_bytes = Path(receipt["handoff_file"]).read_bytes()
+        handoff = json.loads(handoff_bytes)
+        request_bytes = Path(receipt["request_file"]).read_bytes()
+        self.assertEqual(hashlib.sha256(handoff_bytes).hexdigest(), receipt["handoff_sha256"])
+        self.assertEqual(hashlib.sha256(request_bytes).hexdigest(), handoff["request_sha256"])
+        self.assertNotIn(b"\r\n", request_bytes)
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.repo = Path(self.temp.name).resolve()

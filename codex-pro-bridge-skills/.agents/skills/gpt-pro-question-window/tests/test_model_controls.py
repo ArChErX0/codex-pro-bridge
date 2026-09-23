@@ -55,6 +55,26 @@ class ModelControlsTest(unittest.TestCase):
             "verified",
         )
 
+    def test_nested_observation_opens_are_not_model_changes(self):
+        trace = self.trace(schema_version="model-controls/v2", control_layout="nested-slider",
+                           count_model_menu_open=2, count_thinking_control_open=3)
+        result = validate_model_control_trace(trace)
+        self.assertEqual(result["counts"]["model_selection"], 0)
+        self.assertEqual(result["schema_version"], "model-controls/v2")
+        trace["counts"]["model_menu_open"] = 3
+        with self.assertRaises(BridgeError):
+            validate_model_control_trace(trace)
+
+    def test_nested_matching_pair_only_observes(self):
+        trace = self.trace(schema_version="model-controls/v2", control_layout="nested-slider",
+                           initial_thinking_intensity="极高", count_model_menu_open=2,
+                           count_thinking_control_open=2, count_thinking_adjustment=0,
+                           count_thinking_progress_read=0)
+        self.assertEqual(validate_model_control_trace(trace)["status"], "verified")
+        trace["counts"]["thinking_adjustment"] = 1
+        with self.assertRaises(BridgeError):
+            validate_model_control_trace(trace)
+
     def test_latest_alias_is_not_reported_as_exact_model(self) -> None:
         self.assertEqual(
             assess_model_selection("最新", "最新", "latest-alias"),
