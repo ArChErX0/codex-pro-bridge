@@ -1,5 +1,14 @@
 # Codex Pro Bridge
 
+This fork retains the upstream skills and adds an optional persistent MCP worker,
+Windows-native and WSL-to-Windows host configurations, owned browser tabs, durable
+single-send recovery, current ChatGPT UI adapters, and independently verified
+round snapshots, material mappings, capture receipts, and ledger transactions.
+See [the fork enhancements](README.zh-CN.md#本-fork-的增强) and
+[runtime configuration](codex-pro-bridge-skills/.agents/skills/gpt-pro-question-window/references/mcp_runtime.md).
+Host paths and browser identities belong in private local configuration; examples
+remain portable. Source-link proofs accept only their explicitly supported layouts.
+
 [中文说明](README.zh-CN.md)
 
 ## Introduction

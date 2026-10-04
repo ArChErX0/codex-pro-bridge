@@ -162,6 +162,54 @@ exchange-capture, and verdict commands.
 
 Completion criterion: `notes.md`, an immutable snapshot, one `codex-snapshot` event, and the Codex session index all exist and agree on the same thread ID.
 
+快照属于每一轮，不属于整个会话的一次性初始化。持久 worker 在首次发送前调用 notes helper，
+以 `--round-key <job-id>` 保证同一轮重入只复用输入摘要完全相同的快照；复用会话的下一轮仍须
+生成新快照。已有 session metadata 不能替代本轮快照。发送后恢复不生成新轮次、不重发。
+同一 round-key 的快照被 exchange 消费后，notes helper 拒绝把它作为后续轮次的快照；
+已完成 job 的重复查询走捕获证据核验，不重新执行 notes 或发送。
+
+`append_event` 是唯一账本追加者，在同一 ledger 锁内验证现有事件与候选：artifact/来源摘要、
+session/Project、snapshot→exchange→verdict、round-key 和输入资格一起成立才追加。
+新 snapshot 的 `input_proof` 保存不可变 inputs JSON、原 source notes、delivery prompt 和可选
+request；`inputs_sha256` 在锁内复算。runtime 用 `--round-request-file` 冻结原 request，
+新 producer 在摘要前先从显式参数、session 和唯一 store binding 解析实际 Project；冲突失败。
+材料路径与发送问题由共同 `.shared/material_prompt.py` 规则生成；不是把包装后的 notes 当原输入。
+exchange 的 `snapshot_inputs_sha256`、`snapshot_request_sha256`、`raw_prompt`、`notes_reference`
+必须与该轮证明一致；有 ZIP 时其唯一 `context/codex-session-notes.md` 必须逐字节等于冻结原 notes。
+无 ZIP 也须核实际 prompt 和 notes 引用。新候选不能省略这些证明降回旧路线。
+
+旧合法 ledger 的只读核验保持兼容。对已有 keyed snapshot 的合法同 job 准备恢复，helper 只能以
+原 `inputs_sha256`、原 immutable snapshot artifact、当前冻结 job/request/hash 为锚，产生
+`--input-receipt-out` 指定的 `snapshot-inputs/v1` 前瞻证明；不改旧事件或 artifact。
+该收据绑定原 event/artifact/key，未来 exchange 的 `snapshot_input_receipt` 在 appender 锁内消费。
+runtime 的 `--round-handoff-file` 冻结原 handoff；旧 proof 恢复同时核 key=SHA256(repo+handoff SHA)
+及 handoff→request SHA，不能把相同 notes/question 的另一个文件清单或 policy 换绑到旧 job。
+已有新 snapshot proof 是唯一锚，任何附带 receipt 必须保持原 descriptor 完全一致，不能覆盖它。
+证据不足明确失败；不能为制造坏 fixture 放宽生产门。重复 capture 复用首个 exchange 的冻结
+observation 时间，严格 dedupe 仍比较全部身份、artifact 和 payload。
+
+旧 keyed/no-proof 的原九字段摘要若使用空 Project 参数，只有原 immutable notes 的初始 Metadata
+段明确 thread/session/Project，且当前 session 或唯一 store binding 一致时，才允许前瞻推导。
+`snapshot-inputs/v1.project_inference` 使用 `legacy-project-inference/v1`：`project`、
+`binding_kind=session-metadata/v1|store-activity/v1`、`binding_source`（原 canonical 路径/SHA）及
+`binding`（不可变副本路径/SHA）。helper 保留原 inputs 摘要；appender 在首次候选锁事务内核
+实际来源和唯一绑定，已存历史随后只消费原 snapshot 和冻结副本，不要求可变绑定永久不变。
+新 snapshot 禁止使用该推导证明；缺 metadata、缺绑定、重复或冲突绑定及副本摘要漂移均拒绝。
+
+### 缺失快照的有据补记
+
+历史 exchange 已保存而缺失前置快照时，不插入、改序或倒填原 ledger。只有原 exchange
+指向的发送 ZIP 摘要正确，且唯一的 `context/codex-session-notes.md` 仍可读取时，才可用
+`scripts/recover_codex_snapshot.py --repo <repo> --bridge-thread-id <thread> --exchange-id <id>`
+生成只读计划。获得修复授权后，使用同一目标及计划中的
+`--apply --expected-ledger-sha256 <sha256>` 执行。
+
+工具保留原 ledger 副本，提取原包内 notes，并以当前时间追加带 `recovery_for_exchange` 的
+`codex-snapshot`；不声称该事件在发送前已存在。校验器只允许它补足所引用 exchange 的缺口，
+逐字节对比发送包内 notes，拒绝重复补记、身份漂移、原本已有快照或其他账本错误。
+它不开启下一轮；报告中的 `recovered_snapshot_count` 明示恢复数量。无附件或原证据缺失的
+历史轮次不适用此路径，不能凭当前 notes 猜造旧快照。
+
 ### 2. Bundle
 
 Build a new artifact. Existing output files are never overwritten:
@@ -346,6 +394,24 @@ For Project mode, also pass `--bridge-project-id <project-id>`,
 `--observed-account-label <account-label>`.
 
 Completion criterion: a numbered immutable turn exists; its bundle digest matches the file sent; its capture route and target remote turn are recorded; model and attachment provenance are recorded truthfully; the GPT Pro session remains bound to one thread and one ChatGPT URL; and one `gpt-exchange` event points to the turn.
+
+#### 页面原始序列化
+
+显式 `--capture-route browser-page-serialized --answer-format page-serialized-markdown`
+使用 `--capture-proof-file`，继续要求同页 claim/owner/URL/pageId/fresh snapshot 和 canonical attempt。
+来源合同由 `schemas/page_serialization.schema.json` 与 `.shared/capture_provenance.py` 共同拥有。
+producer 只读取已观察到的 React message props；DOM 只定位精确 message ID，不读取 innerText 重建原文。
+proof 保存原始 user/assistant message 与 node：user 的 id/message 一致，原始 `children` 完整关系
+必须精确只有目标 assistant；assistant parent 只能来自 raw `message.parent_id` 或原 node.parent
+且 node.message 一致。缺 parent/children、非唯一、非 final/finished_successfully/end_turn、截断、
+非单 text Markdown part、prompt/owner/URL/pageId/摘要漂移都失败，不能补造来源或自动切换 route。
+原始 user prompt 与冻结 prompt 仅允许一个末尾 LF 的已明确差异；raw Markdown 必须字节相同。
+
+saver 将 raw prompt/notes/answer/proof 保存为不可变 canonical 来源文件。原 `content.parts` 字符串
+按 UTF-8 保存并核摘要，CRLF 不能由通用 text reader 归一化。owner token 只在私有 proof，
+不进入公开状态或回执。POSIX proof 要求普通非 symlink 文件且权限不开放给组/其他用户；FIFO、
+socket/device 在读取或摘要前拒绝。Windows 目录须由部署者保证当前用户私有 ACL，不能把本地
+POSIX fixture 说成 Windows ACL 已验证。附件下载补件仍是另一个状态，原文里的链接不证明已回收。
 
 ### 4. Codex verdict
 

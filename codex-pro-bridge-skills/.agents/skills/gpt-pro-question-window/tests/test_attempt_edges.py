@@ -18,6 +18,7 @@ from bridge_attempts import (  # noqa: E402
     record_submission,
 )
 from bridge_store import BridgeError, append_event, file_sha256  # noqa: E402
+from b4_fixtures import exchange_proof, input_proof
 
 
 class AttemptEdgeTest(unittest.TestCase):
@@ -67,17 +68,25 @@ class AttemptEdgeTest(unittest.TestCase):
         attempt = self._submitted_attempt()
         wrong_turn = self.repo / "wrong-turn.md"
         wrong_turn.write_text("answer from another remote turn\n", encoding="utf-8")
+        notes = self.repo / "snapshot.md"
+        notes.write_text("snapshot")
+        snapshot = append_event(self.repo, thread_id="attempt-thread", event_type="codex-snapshot", actor="codex",
+                     codex_session_id="attempt-thread-codex",
+                     data=input_proof(self.repo,"attempt-thread","attempt-thread-codex",notes,question=attempt["prompt"]),
+                     artifact={"kind":"codex-notes", "path":notes.name, "sha256":file_sha256(notes)})
         append_event(
             self.repo,
             thread_id="attempt-thread",
             event_type="gpt-exchange",
             actor="gpt-pro",
+            codex_session_id="attempt-thread-codex", gpt_pro_session_id="attempt-thread-gpt-pro",
             artifact={
                 "kind": "gpt-pro-turn",
                 "path": "wrong-turn.md",
                 "sha256": file_sha256(wrong_turn),
             },
             data={
+                "snapshot_inputs_sha256":snapshot["data"]["inputs_sha256"],**exchange_proof(self.repo,snapshot),
                 "remote_turn_id": "different-remote-turn",
                 "observed_conversation_id": "pinned-conversation",
             },

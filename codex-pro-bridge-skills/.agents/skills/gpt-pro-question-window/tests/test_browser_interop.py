@@ -18,6 +18,7 @@ from bridge_store import (
 )
 from browser_host import staging_windows_root
 from browser_identity import (
+    conversation_identity_from_url,
     bootstrap_destination_from_url,
     resolve_owned_tab,
     verify_bootstrap_tab,
@@ -30,6 +31,26 @@ from browser_observations import (
 
 
 class BrowserInteropTest(unittest.TestCase):
+    def test_optimistic_local_conversation_cannot_be_used_as_server_identity(self):
+        for prefix in ('https://chatgpt.com/c/', 'https://chatgpt.com/g/g-p-test/c/'):
+            for identifier in ('local-chatgpt:abc', 'local-chatgpt%3Aabc', 'local-chatgpt%3aabc'):
+                with self.subTest(url=prefix + identifier), self.assertRaisesRegex(BridgeError, 'provisional'):
+                    conversation_identity_from_url(prefix + identifier)
+        self.assertEqual(conversation_identity_from_url('https://chatgpt.com/g/g-p-test/c/server-id'),
+                         ('g-p-test', 'server-id'))
+
+    def test_untitled_pages_are_retained_with_exact_urls(self):
+        pages = normalize_pages_observation({"content": [{"type": "text", "text":
+            "## Pages\n7: about:blank#bridge-envelope-verified [selected]\n"
+            "8: https://example.com/untitled\n9: ChatGPT (https://chatgpt.com/c/test)"}]})
+        self.assertEqual(pages, [
+            {"page_id": "7", "url": "about:blank#bridge-envelope-verified"},
+            {"page_id": "8", "url": "https://example.com/untitled"},
+            {"page_id": "9", "url": "https://chatgpt.com/c/test"}])
+        with self.assertRaises(BridgeError):
+            normalize_pages_observation({"content": [{"type": "text", "text":
+                "## Pages\n7: unknown title without URL"}]})
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.repo = Path(self.temp.name).resolve() / "repo"

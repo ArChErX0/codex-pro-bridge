@@ -17,6 +17,10 @@ from model_controls import (
 )
 
 
+from model_controls import (
+    model_selection_matches,
+)
+
 class ModelControlsTest(unittest.TestCase):
     def trace(self, **changes):
         value = {
@@ -139,6 +143,17 @@ class ModelControlsTest(unittest.TestCase):
             second = subprocess.run(args, capture_output=True, text=True, check=False)
             self.assertNotEqual(second.returncode, 0)
             self.assertIn("refusing to overwrite", second.stderr)
+
+    def test_latest_alias_accepts_observed_english_label_only_for_alias_kind(self):
+        self.assertTrue(model_selection_matches("最新", "Latest", "latest-alias"))
+        self.assertEqual(assess_model_selection("最新", "Latest", "latest-alias"), "alias-selected")
+        self.assertEqual(
+            validate_model_control_trace(self.trace(selected_model="Latest"))["status"],
+            "verified",
+        )
+        self.assertFalse(model_selection_matches("最新", "GPT-5.6 Sol", "latest-alias"))
+        self.assertFalse(model_selection_matches("最新", "Latest", "exact"))
+        self.assertFalse(model_selection_matches("最新", "最新", "other"))
 
 
 if __name__ == "__main__":

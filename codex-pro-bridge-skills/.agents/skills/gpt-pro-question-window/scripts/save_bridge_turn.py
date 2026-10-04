@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 SHARED_DIR = Path(__file__).resolve().parents[2] / ".shared"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(SHARED_DIR))
 
 from bridge_attempts import (
@@ -49,6 +50,8 @@ from browser_identity import (
 from browser_observations import parse_json_observation
 from model_controls import MODEL_SELECTION_KINDS, assess_model_selection
 from project_store import BridgeProjectStore
+from capture_provenance import PAGE_FORMAT, PAGE_ROUTE, private_proof, validate_page_serialization
+from copied_link_source import require_source_proof_status, validate_source_link_proof
 
 
 def read_value(text: str, file_path: str) -> str:
@@ -123,7 +126,7 @@ def validate_timestamp(value: str, flag: str, *, default_now: bool = False) -> s
     if not value:
         return now_iso() if default_now else ""
     try:
-        parsed = dt.datetime.fromisoformat(value)
+        parsed = timestamp_value(value)
     except ValueError as exc:
         raise BridgeError(f"{flag} must be an ISO-8601 timestamp") from exc
     if parsed.tzinfo is None:
@@ -132,7 +135,7 @@ def validate_timestamp(value: str, flag: str, *, default_now: bool = False) -> s
 
 
 def timestamp_value(value: str) -> dt.datetime | None:
-    return dt.datetime.fromisoformat(value) if value else None
+    return dt.datetime.fromisoformat(value.removesuffix("Z") + ("+00:00" if value.endswith("Z") else "")) if value else None
 
 
 def build_turn(
@@ -324,7 +327,7 @@ def main() -> int:
     parser.add_argument("--upload-control", default="", help="Successful semantic upload route, for example visible-menu.")
     parser.add_argument(
         "--capture-route",
-        choices=("browser", "browser-fallback", "native-read-thread"),
+        choices=("browser", "browser-fallback", "native-read-thread", PAGE_ROUTE),
         default="browser",
         help=(
             "Where the full raw answer was captured. browser is the compatible "
@@ -333,7 +336,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--answer-format",
-        choices=("copied-markdown", "native-raw", "plain-text-degraded"),
+        choices=("copied-markdown", "native-raw", "plain-text-degraded", PAGE_FORMAT),
         default="",
         help=(
             "Serialization of the saved answer. Browser fallback should use "
@@ -349,6 +352,14 @@ def main() -> int:
     parser.add_argument("--prompt-file", default="")
     parser.add_argument("--answer", default="")
     parser.add_argument("--answer-file", default="")
+    parser.add_argument("--capture-proof-file", default="", help="页面原始序列化的独立来源proof JSON")
+    parser.add_argument("--source-link-proof-file", default="", help="新UI copied-link logical source proof JSON")
+    parser.add_argument("--source-link-status", choices=("available", "unsupported"), default="unsupported",
+                        help="Capture-time copied-link source availability; available requires a proof file")
+    parser.add_argument("--round-key", default="", help="绑定本轮snapshot的同job身份")
+    parser.add_argument("--snapshot-inputs-sha256", default="", help="runtime本轮snapshot输入摘要")
+    parser.add_argument("--snapshot-request-sha256", default="", help="runtime本轮冻结request摘要")
+    parser.add_argument("--snapshot-input-receipt", default="", help="同job原snapshot输入收据；旧checkpoint的前瞻证明不改写历史")
     parser.add_argument("--summary", default="", help="Optional capture summary; also used by legacy immediate-verdict calls.")
     parser.add_argument("--summary-file", default="")
     parser.add_argument("--verification", default="", help="Compatibility path: record an immediate Codex verdict after capture.")
@@ -379,8 +390,9 @@ def main() -> int:
         attempt_id = args.attempt_id or (pending_attempt["attempt_id"] if pending_attempt else "")
         attempt = None
         if attempt_id:
-            prompt = Path(args.prompt_file).read_text(encoding="utf-8") if args.prompt_file else args.prompt
-            answer = Path(args.answer_file).read_text(encoding="utf-8") if args.answer_file else args.answer
+            raw_page = args.capture_route == PAGE_ROUTE
+            prompt = Path(args.prompt_file).read_bytes().decode("utf-8") if args.prompt_file else args.prompt
+            answer = (Path(args.answer_file).read_bytes().decode("utf-8") if raw_page else Path(args.answer_file).read_text(encoding="utf-8")) if args.answer_file else args.answer
             attempt = validate_capture(repo, thread_id, attempt_id, prompt=prompt,
                                        conversation_url=args.web_url,
                                        remote_turn_id=args.remote_turn_id.strip())
@@ -458,13 +470,22 @@ def main() -> int:
                 "Browser fallback requires explicit --answer-format copied-markdown "
                 "or plain-text-degraded"
             )
+        if capture_route == PAGE_ROUTE and (answer_format != PAGE_FORMAT or not args.capture_proof_file or not attempt):
+            raise BridgeError("Page serialization requires canonical attempt, page-serialized-markdown and raw proof")
+        if capture_route != PAGE_ROUTE and (args.capture_proof_file or answer_format == PAGE_FORMAT):
+            raise BridgeError("Page serialization proof/format must use its honest capture route")
+        if args.source_link_proof_file and (capture_route != "browser-fallback" or answer_format != "copied-markdown"):
+            raise BridgeError("Copied-link source proof requires browser-fallback copied-markdown capture")
+        require_source_proof_status(route=capture_route, answer_format=answer_format,
+                                    status=args.source_link_status,
+                                    proof_present=bool(args.source_link_proof_file))
         answer_sha256 = hashlib.sha256(answer.encode("utf-8")).hexdigest()
         remote_turn_id = args.remote_turn_id.strip()
         if remote_turn_id and not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", remote_turn_id):
             raise BridgeError(
                 "--remote-turn-id must contain only letters, digits, underscores, or hyphens"
             )
-        if capture_route in {"native-read-thread", "browser-fallback"}:
+        if capture_route in {"native-read-thread", "browser-fallback", PAGE_ROUTE}:
             if not remote_turn_id:
                 raise BridgeError(
                     f"--remote-turn-id is required for --capture-route {capture_route}"
@@ -490,7 +511,7 @@ def main() -> int:
                 raise BridgeError(
                     "Native read_thread capture must omit browser claim and tab observations"
                 )
-        elif capture_route == "browser-fallback":
+        elif capture_route in {"browser-fallback", PAGE_ROUTE}:
             if not args.browser_lease_token or not all(browser_identity_args):
                 raise BridgeError(
                     "Browser fallback requires claim token, page URL/id, fresh snapshot pageId, "
@@ -555,6 +576,30 @@ def main() -> int:
             raise BridgeError(
                 "Browser claim and tab observations are only accepted for browser-fallback capture"
             )
+        capture_proof = None
+        if capture_route == PAGE_ROUTE:
+            raw_proof_path = Path(args.capture_proof_file)
+            private_proof(raw_proof_path if raw_proof_path.is_absolute() else repo/raw_proof_path)
+            proof_path = resolve_repo_path(args.capture_proof_file, repo)
+            private_proof(proof_path)
+            capture_proof = json.loads(proof_path.read_text(encoding="utf-8"))
+            validated = validate_page_serialization(capture_proof, attempt=attempt, prompt=prompt, answer=answer,
+                page_id=args.observed_page_id, owner=args.observed_tab_owner_token, url=args.web_url)
+            if validated["completed_at"] != response_completed_at:
+                raise BridgeError("Raw serialization completion observation disagrees with capture")
+        source_link_proof = None
+        if args.source_link_proof_file:
+            source_proof_path = resolve_repo_path(args.source_link_proof_file, repo)
+            private_proof(source_proof_path)
+            source_link_proof = json.loads(source_proof_path.read_text(encoding="utf-8"))
+            validate_source_link_proof(
+                source_link_proof, answer, assistant_id=source_link_proof.get("assistant_id"),
+                user_id=remote_turn_id, expected_url=args.web_url,
+                expected_owner=args.observed_tab_owner_token, expected_page_id=args.observed_page_id,
+                expected_prompt=prompt,
+            )
+            if source_link_proof.get("source_link_count") != source_link_proof.get("copied_link_count"):
+                raise BridgeError("Copied-link source proof receipt counts disagree")
         if args.single_round:
             prior_exchange = any(
                 event.get("event_type") == "gpt-exchange" and
@@ -866,6 +911,21 @@ def main() -> int:
             ).encode("utf-8")).hexdigest()
             reserve_capture(repo, thread_id, attempt_id, capture_fingerprint)
         with file_lock(session_dir / ".session.lock"):
+            raw_path = session_dir / "raw" / f"{capture_fingerprint}.md"
+            raw_prompt = session_dir / "raw" / f"{capture_fingerprint}.prompt.md"
+            raw_notes = session_dir / "raw" / f"{capture_fingerprint}.notes.md"
+            proof_saved = session_dir / "raw" / f"{capture_fingerprint}.serialization.json"
+            source_proof_saved = session_dir / "raw" / f"{capture_fingerprint}.source-links.json"
+            evidence = [(raw_path, answer),(raw_prompt,prompt),(raw_notes,notes_path.read_bytes().decode("utf-8"))]
+            if capture_proof is not None:
+                evidence.append((proof_saved, json.dumps(capture_proof, ensure_ascii=False, sort_keys=True) + "\n"))
+            if source_link_proof is not None:
+                evidence.append((source_proof_saved, json.dumps(source_link_proof, ensure_ascii=False, sort_keys=True) + "\n"))
+            for path, contents in evidence:
+                if path.exists() and path.read_bytes().decode("utf-8") != contents:
+                    raise BridgeError("Canonical raw capture evidence drift")
+                if not path.exists():
+                    atomic_write_text(path, contents)
             turn_file = next(
                 (
                     path
@@ -974,6 +1034,42 @@ def main() -> int:
             )
         write_session_index(sessions_dir, kind="gpt-pro")
         turn_rel = repo_relative(turn_file, repo)
+        # A retry reuses the first immutable observation; it must not propose
+        # changed metadata to the appender's strict dedupe transaction.
+        prior = [event for event in load_events(bridge_dir, thread_id)
+                 if event.get("dedupe_key") == f"gpt-exchange:{capture_fingerprint}"]
+        if prior:
+            frozen_data = prior[0]["data"]
+            generation_observed_at = frozen_data.get("generation_observed_at", "")
+            response_completed_at = frozen_data.get("response_completed_at", "")
+            response_wait_seconds = frozen_data.get("response_wait_seconds")
+            snapshot_inputs_sha256 = frozen_data.get("snapshot_inputs_sha256", "")
+            snapshot_request_sha256 = frozen_data.get("snapshot_request_sha256", "")
+            prior_source = frozen_data.get("source_link_proof")
+            if frozen_data.get("source_link_status", "unsupported") != args.source_link_status:
+                raise BridgeError("Retry copied-link source status disagrees with canonical exchange")
+            if (prior_source is None) != (source_link_proof is None):
+                raise BridgeError("Retry copied-link source proof presence disagrees with canonical exchange")
+            if source_link_proof is not None and prior_source is not None:
+                current_source = {
+                    "sha256": file_sha256(source_proof_saved),
+                    "source_sha256": source_link_proof.get("source_sha256"),
+                    "structural_link_count": source_link_proof.get("structural_link_count"),
+                    "source_link_count": source_link_proof.get("source_link_count"),
+                    "copied_link_count": source_link_proof.get("copied_link_count"),
+                }
+                if current_source != prior_source:
+                    raise BridgeError("Retry copied-link source proof disagrees with canonical exchange")
+        else:
+            snapshots = [event for event in load_events(bridge_dir, thread_id)
+                         if event.get("event_type") == "codex-snapshot" and not event.get("data", {}).get("recovery_for_exchange")]
+            snapshot_data = snapshots[-1].get("data", {}) if snapshots else {}
+            snapshot_inputs_sha256 = args.snapshot_inputs_sha256 or snapshot_data.get("inputs_sha256", "")
+            snapshot_request_sha256 = args.snapshot_request_sha256 or (snapshot_data.get("input_proof", {}).get("request") or {}).get("sha256", "")
+        snapshot_input_receipt = None
+        if args.snapshot_input_receipt:
+            snapshot_receipt_path = resolve_repo_path(args.snapshot_input_receipt,repo)
+            snapshot_input_receipt = {"path":repo_relative(snapshot_receipt_path,repo),"sha256":file_sha256(snapshot_receipt_path)}
         append_event(
             repo,
             thread_id=thread_id,
@@ -1007,8 +1103,32 @@ def main() -> int:
                 "capture_route": capture_route,
                 "answer_format": answer_format,
                 "answer_sha256": answer_sha256,
+                "raw_answer": {"path": repo_relative(raw_path, repo), "sha256": file_sha256(raw_path)},
+                "raw_prompt": {"path":repo_relative(raw_prompt,repo),"sha256":file_sha256(raw_prompt)},
+                "notes_reference": {"path":repo_relative(raw_notes,repo),"sha256":file_sha256(raw_notes)},
+                **({"snapshot_input_receipt":snapshot_input_receipt} if snapshot_input_receipt else {}),
+                **({"capture_proof": {"path": repo_relative(proof_saved, repo), "sha256": file_sha256(proof_saved)}}
+                   if capture_proof is not None else {}),
+                **({"source_link_proof": {
+                    "path": repo_relative(source_proof_saved, repo),
+                    "sha256": file_sha256(source_proof_saved),
+                    "assistant_id": source_link_proof["assistant_id"],
+                    "user_id": source_link_proof["user_id"],
+                    "conversation_url": source_link_proof["conversation_url"],
+                    "owner_token": source_link_proof["owner_token"],
+                    "page_id": source_link_proof["page_id"],
+                    "source_sha256": source_link_proof["source_sha256"],
+                    "structural_link_count": source_link_proof["structural_link_count"],
+                    "source_link_count": source_link_proof["source_link_count"],
+                    "copied_link_count": source_link_proof["copied_link_count"],
+                }} if source_link_proof is not None else {}),
+                "source_link_status": args.source_link_status,
+                "observed_page_id": normalize_page_id(args.observed_page_id) if capture_route == "browser-fallback" else "",
                 "remote_turn_id": remote_turn_id,
                 "attempt_id": attempt_id,
+                **({"round_key": validate_id(args.round_key, "round key")} if args.round_key else {}),
+                "snapshot_inputs_sha256": snapshot_inputs_sha256,
+                "snapshot_request_sha256": snapshot_request_sha256,
                 "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
                 "submitted_at": submitted_at,
                 "generation_observed_at": generation_observed_at,
@@ -1038,7 +1158,7 @@ def main() -> int:
             print(f"Immediate verdict: {verdict_path}", file=sys.stderr)
         print(turn_file)
         return 0
-    except (BridgeError, OSError) as exc:
+    except (BridgeError, OSError, ValueError, KeyError) as exc:
         parser.error(str(exc))
 
 

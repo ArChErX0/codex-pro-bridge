@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import re
 import sys
 from pathlib import Path
@@ -19,15 +21,86 @@ from bridge_store import (  # noqa: E402
     bridge_root,
     default_codex_session_id,
     file_sha256,
+    file_lock,
+    load_events,
+    legacy_project_binding_source,
     now_iso,
     parse_metadata,
     repo_relative,
     unique_artifact_path,
     validate_id,
+    verify_thread_integrity,
     write_bound_metadata,
     write_session_index,
 )
 from project_store import BridgeProjectStore  # noqa: E402
+from material_prompt import delivery_prompt  # noqa: E402
+
+
+def freeze_inputs(repo, stem, inputs, source_bytes, request_bytes):
+    prompt = delivery_prompt(json.loads(request_bytes)) if request_bytes is not None else inputs["question"]
+    sources = {"inputs":(stem.with_suffix(".inputs.json"),json.dumps(inputs,ensure_ascii=False,sort_keys=True).encode()),
+               "source_notes":(stem.with_suffix(".source-notes.md"),source_bytes),
+               "delivery_prompt":(stem.with_suffix(".delivery-prompt.md"),prompt.encode())}
+    if request_bytes is not None:
+        sources["request"] = (stem.with_suffix(".request.json"),request_bytes)
+    proof = {"request":None}
+    for kind,(path,contents) in sources.items():
+        if path.exists() and path.read_bytes() != contents:
+            raise BridgeError("Immutable snapshot input proof drift")
+        if not path.exists():
+            atomic_write_text(path,contents.decode("utf-8"))
+        proof[kind] = {"path":repo_relative(path,repo),"sha256":file_sha256(path)}
+    return proof
+
+
+def publish_input_receipt(repo, out, event, proof, handoff_file="", project_inference=None):
+    if not out:
+        return
+    path = Path(out).resolve()
+    if not path.is_relative_to(repo) or Path(out).is_symlink():
+        raise BridgeError("Snapshot receipt must stay inside the repository")
+    receipt = {"schema_version":"snapshot-inputs/v1","snapshot_event_id":event["event_id"],
+               "snapshot_artifact":event["artifact"],"round_key":event["data"].get("round_key",""),
+               "inputs_sha256":event["data"]["inputs_sha256"],"input_proof":proof}
+    if project_inference:
+        receipt["project_inference"] = project_inference
+    if handoff_file:
+        source = Path(handoff_file).resolve(strict=True)
+        if not source.is_relative_to(repo):
+            raise BridgeError("Round handoff must stay inside the repository")
+        sha = file_sha256(source)
+        handoff = json.loads(source.read_text(encoding="utf-8"))
+        expected_job = hashlib.sha256((str(repo)+"\n"+sha).encode()).hexdigest()
+        if (receipt["round_key"] != expected_job or handoff.get("request_sha256") != (proof["request"] or {}).get("sha256")
+                or handoff.get("repo") != str(repo) or handoff.get("bridge_thread_id") != event["thread_id"]):
+            raise BridgeError("Round handoff/job/request anchor mismatch")
+        frozen = path.with_suffix(".handoff.json")
+        contents = source.read_bytes()
+        if frozen.exists() and frozen.read_bytes() != contents:
+            raise BridgeError("Immutable prospective handoff drift")
+        if not frozen.exists():
+            atomic_write_text(frozen,contents.decode("utf-8"))
+        receipt["job_handoff"] = {"path":repo_relative(frozen,repo),"sha256":sha}
+    contents = json.dumps(receipt,ensure_ascii=False,sort_keys=True)+"\n"
+    if path.exists() and path.read_text(encoding="utf-8") != contents:
+        raise BridgeError("Immutable snapshot input receipt drift")
+    if not path.exists():
+        atomic_write_text(path,contents)
+
+
+def freeze_project_inference(repo, stem, event):
+    kind,source = legacy_project_binding_source(repo,event)
+    digest = file_sha256(source)
+    frozen = stem.with_suffix(".project-binding.md" if kind == "session-metadata/v1" else ".project-binding.jsonl")
+    contents = source.read_bytes()
+    if frozen.exists() and frozen.read_bytes() != contents:
+        raise BridgeError("Immutable legacy Project binding drift")
+    if not frozen.exists():
+        atomic_write_text(frozen,contents.decode("utf-8"))
+    return {"schema_version":"legacy-project-inference/v1","project":event["bridge_project_id"],
+            "binding_kind":kind,"binding_source":{"path":repo_relative(source,repo),"sha256":digest},
+            "binding":{"path":repo_relative(frozen,repo),"sha256":digest}}
 
 
 def read_value(text: str, file_path: str) -> str:
@@ -116,7 +189,24 @@ def main() -> int:
     parser.add_argument("--raw-history", default="", help="Optional recent raw turns.")
     parser.add_argument("--raw-history-file", default="", help="File containing optional raw turns.")
     parser.add_argument("--history-source", default="", help="Examples: visible-codex-context, exported-transcript.")
+    parser.add_argument("--round-key", default="", help="Stable job identity; retries reuse only identical snapshot inputs.")
+    parser.add_argument("--round-request-file", default="", help="同round已冻结request的原始来源；复制为不可变证据")
+    parser.add_argument("--input-receipt-out", default="", help="向当前job发布不可变snapshot输入收据，不修改旧事件")
+    parser.add_argument("--round-handoff-file", default="", help="同job原hand-off摘要锚，防旧snapshot来源换绑")
     args = parser.parse_args()
+
+    try:
+        repo = Path(args.repo).resolve()
+        thread = validate_id(args.bridge_thread_id, "bridge thread id")
+        if not repo.is_dir():
+            raise BridgeError("Repository root is not a directory")
+        with file_lock(bridge_root(repo) / "threads" / f".{thread}.snapshot.lock"):
+            return write_notes(args, parser)
+    except (BridgeError, OSError) as exc:
+        parser.error(str(exc))
+
+
+def write_notes(args, parser) -> int:
 
     try:
         repo = Path(args.repo).resolve()
@@ -126,6 +216,24 @@ def main() -> int:
         codex_session_id = validate_id(
             args.codex_session_id or default_codex_session_id(thread_id), "Codex session id"
         )
+        bridge_dir = bridge_root(repo)
+        sessions_dir = bridge_dir / "codex-sessions"
+        session_dir = sessions_dir / codex_session_id
+        session_path = session_dir / "session.md"
+        notes_path = session_dir / "notes.md"
+        previous = parse_metadata(session_path)
+        if previous.get("bridge_thread_id") not in (None,"",thread_id):
+            raise BridgeError("Codex session is already bound to another thread")
+        project_store = BridgeProjectStore(repo)
+        bound_project = project_store.project_for_thread(thread_id)
+        if previous.get("bridge_project_id") and bound_project and previous["bridge_project_id"] != bound_project:
+            raise BridgeError("Codex session and unique Project store binding disagree")
+        bridge_project_id = args.bridge_project_id or previous.get("bridge_project_id","") or bound_project
+        if bridge_project_id:
+            bridge_project_id = project_store.resolve_project_id(bridge_project_id)
+        if (previous.get("bridge_project_id") not in (None,"",bridge_project_id)
+                or bound_project not in ("",bridge_project_id)):
+            raise BridgeError("Codex session and unique Project store binding disagree")
         goal = read_value(args.goal, args.goal_file)
         question = read_value(args.gpt_pro_question, args.gpt_pro_question_file)
         summary = read_value(args.summary, args.summary_file)
@@ -137,35 +245,75 @@ def main() -> int:
                 "A non-unavailable --history-source requires --raw-history or --raw-history-file"
             )
 
-        bridge_dir = bridge_root(repo)
-        sessions_dir = bridge_dir / "codex-sessions"
-        session_dir = sessions_dir / codex_session_id
+        round_key = validate_id(args.round_key, "round key") if args.round_key else ""
+        inputs = {
+            "thread": thread_id, "session": codex_session_id, "project": bridge_project_id,
+            "goal": goal, "question": question, "summary": summary, "raw_history": raw_history,
+            "history_source": args.history_source, "title": args.title,
+        }
+        inputs_sha256 = hashlib.sha256(json.dumps(inputs, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+        request_bytes = None
+        if args.round_request_file:
+            request_path = Path(args.round_request_file).resolve(strict=True)
+            if not request_path.is_relative_to(repo) or not request_path.is_file():
+                raise BridgeError("Round request must be a regular repository file")
+            request_bytes = request_path.read_bytes()
+            request = json.loads(request_bytes)
+            if (request.get("repo") != str(repo) or request.get("bridge_thread_id") != thread_id
+                    or request.get("goal", "").strip() != goal or request.get("question", "").strip() != question):
+                raise BridgeError("Round request and snapshot inputs disagree")
+        events = load_events(bridge_root(repo), thread_id)
+        if round_key:
+            # Session existence is not evidence of a snapshot for this round.
+            # Check before writes, including when a worker crashed after append.
+            matches = [e for e in events if e.get("dedupe_key") == f"codex-snapshot-round:{round_key}"]
+            if matches:
+                event = matches[0]
+                if event.get("bridge_project_id","") != bridge_project_id:
+                    raise BridgeError("Round snapshot Project changed or lacks an existing binding")
+                project_inference = None
+                needs_project_inference = False
+                legacy_inputs = {**inputs,"project":""}
+                legacy_sha = hashlib.sha256(json.dumps(legacy_inputs,ensure_ascii=False,sort_keys=True).encode()).hexdigest()
+                if (not event.get("data",{}).get("input_proof") and bridge_project_id
+                        and event.get("bridge_project_id") == bridge_project_id
+                        and event.get("data",{}).get("inputs_sha256") == legacy_sha):
+                    # Preserve the old nine-field hash. Only the original snapshot
+                    # plus a qualified existing binding can prove its empty arg.
+                    inputs,inputs_sha256 = legacy_inputs,legacy_sha
+                    needs_project_inference = True
+                if (len(matches) != 1 or event.get("event_type") != "codex-snapshot"
+                        or event.get("data", {}).get("inputs_sha256") != inputs_sha256):
+                    raise BridgeError("Round snapshot inputs changed")
+                expected_request = hashlib.sha256(request_bytes).hexdigest() if request_bytes is not None else ""
+                prior_proof = event.get("data", {}).get("input_proof")
+                if prior_proof and (prior_proof.get("request") or {}).get("sha256", "") != expected_request:
+                    raise BridgeError("Round snapshot request changed or lacks immutable input proof")
+                verify_thread_integrity(repo, thread_id)
+                position = events.index(event)
+                if any(e.get("event_type") == "gpt-exchange" for e in events[position + 1:]):
+                    raise BridgeError("Round snapshot was already consumed; use a new round key")
+                if not prior_proof:
+                    if not args.input_receipt_out or request_bytes is None or not args.round_handoff_file:
+                        raise BridgeError("Legacy snapshot needs frozen current-job/request proof for prospective recovery")
+                    stem = (repo/event["artifact"]["path"]).with_name("prospective-"+round_key)
+                    if needs_project_inference:
+                        project_inference = freeze_project_inference(repo,stem,event)
+                    source_bytes = Path(args.summary_file).read_bytes() if args.summary_file else summary.encode()
+                    prior_proof = freeze_inputs(repo,stem,inputs,source_bytes,request_bytes)
+                publish_input_receipt(repo,args.input_receipt_out,event,prior_proof,args.round_handoff_file,project_inference)
+                print(repo / event["artifact"]["path"])
+                return 0
+            if events:
+                verify_thread_integrity(repo, thread_id)
+                normal = [e for e in events if e.get("event_type") in
+                          {"codex-snapshot", "gpt-exchange", "codex-verdict"}
+                          and not e.get("data", {}).get("recovery_for_exchange")]
+                if normal and normal[-1]["event_type"] == "gpt-exchange":
+                    raise BridgeError("Record the pending Codex verdict before starting a new round")
+
         session_dir.mkdir(parents=True, exist_ok=True)
-        session_path = session_dir / "session.md"
-        notes_path = session_dir / "notes.md"
-        previous = parse_metadata(session_path)
-        if previous.get("bridge_thread_id") not in (None, "", thread_id):
-            raise BridgeError(
-                f"Codex session {codex_session_id} is already bound to "
-                f"{previous['bridge_thread_id']}; refusing to move it to {thread_id}"
-            )
-        project_store = BridgeProjectStore(repo)
-        bridge_project_id = (
-            args.bridge_project_id
-            or previous.get("bridge_project_id", "")
-            or project_store.project_for_thread(thread_id)
-        )
         if bridge_project_id:
-            bridge_project_id = project_store.resolve_project_id(bridge_project_id)
-            if previous.get("bridge_project_id") not in (
-                None,
-                "",
-                bridge_project_id,
-            ):
-                raise BridgeError(
-                    f"Codex session {codex_session_id} belongs to "
-                    f"{previous['bridge_project_id']}, not {bridge_project_id}"
-                )
             project_store.attach_thread(
                 bridge_project_id,
                 thread_id,
@@ -194,6 +342,8 @@ def main() -> int:
         )
         snapshot_path = unique_artifact_path(session_dir / "snapshots", "notes", ".md")
         atomic_write_text(snapshot_path, notes)
+        source_bytes = Path(args.summary_file).read_bytes() if args.summary_file else summary.encode("utf-8")
+        input_proof = freeze_inputs(repo,snapshot_path,inputs,source_bytes,request_bytes)
         atomic_write_text(notes_path, notes)
 
         write_bound_metadata(
@@ -229,7 +379,7 @@ def main() -> int:
         )
         write_session_index(sessions_dir, kind="codex")
         snapshot_rel = repo_relative(snapshot_path, repo)
-        append_event(
+        event = append_event(
             repo,
             thread_id=thread_id,
             event_type="codex-snapshot",
@@ -248,10 +398,13 @@ def main() -> int:
                 "question": one_line(question),
                 "history_source": history_source,
                 "current_notes": repo_relative(notes_path, repo),
+                "inputs_sha256": inputs_sha256, "input_proof": input_proof,
+                **({"round_key": round_key, "inputs_sha256": inputs_sha256} if round_key else {}),
             },
-            dedupe_key=f"codex-snapshot:{snapshot_rel}",
+            dedupe_key=f"codex-snapshot-round:{round_key}" if round_key else f"codex-snapshot:{snapshot_rel}",
             occurred_at=now,
         )
+        publish_input_receipt(repo,args.input_receipt_out,event,input_proof,args.round_handoff_file)
         print(notes_path)
         print(f"Immutable snapshot: {snapshot_path}", file=sys.stderr)
         return 0

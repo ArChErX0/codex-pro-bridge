@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 SKILLS = Path(__file__).resolve().parents[2]
@@ -18,7 +19,8 @@ from bridge_attempts import (
     prepare_attempt,
     record_submission,
 )
-from bridge_store import bridge_root, write_bound_metadata
+from bridge_store import append_event, bridge_root, file_sha256, write_bound_metadata
+from b4_fixtures import input_proof
 
 
 class SaveBridgeTurnProvenanceTests(unittest.TestCase):
@@ -29,7 +31,8 @@ class SaveBridgeTurnProvenanceTests(unittest.TestCase):
         self.prompt = "请核对附件。"
         self.answer = "完整回答。"
         self.bundle = self.repo / "source-bundle.zip"
-        self.bundle.write_bytes(b"bundle bytes")
+        with zipfile.ZipFile(self.bundle,"w") as archive:
+            archive.writestr("context/codex-session-notes.md",b"notes\n")
         self.digest = hashlib.sha256(self.bundle.read_bytes()).hexdigest()
         self.staged_name = "codex-bridge-provenance-thread-digest-source-bundle.zip"
         self.preflight = {
@@ -71,6 +74,10 @@ class SaveBridgeTurnProvenanceTests(unittest.TestCase):
         notes_dir.mkdir(parents=True, exist_ok=True)
         notes = notes_dir / "notes.md"
         notes.write_text("notes\n", encoding="utf-8")
+        append_event(self.repo, thread_id=self.thread, event_type="codex-snapshot", actor="codex",
+                     data=input_proof(self.repo,self.thread,codex_id,notes,question=self.prompt),
+                     codex_session_id=codex_id, artifact={"kind":"codex-notes",
+                     "path":str(notes.relative_to(self.repo)), "sha256":file_sha256(notes)})
         session = notes_dir / "session.md"
         write_bound_metadata(
             session,

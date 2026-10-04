@@ -14,6 +14,7 @@ from typing import Any
 
 from bridge_store import BridgeError, validate_id
 from model_controls import MODEL_SELECTION_KINDS
+from collaboration_scope import scope_fields
 
 HANDOFF_V1 = "executor_handoff/v1"
 HANDOFF_V2 = "executor_handoff/v2"
@@ -51,6 +52,7 @@ def validate_handoff(
     if not isinstance(handoff, Mapping):
         raise BridgeError("executor handoff must be a JSON object")
     data = dict(handoff)
+    scope_fields(data)
     schema = _required_string(data, "schema_version")
     if schema not in {HANDOFF_V1, HANDOFF_V2}:
         raise BridgeError(f"unsupported executor handoff schema: {schema}")

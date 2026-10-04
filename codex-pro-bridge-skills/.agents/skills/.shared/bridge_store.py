@@ -15,8 +15,9 @@ import os
 import re
 import tempfile
 import uuid
+import zipfile
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Mapping, Sequence
+from typing import Any, Dict, Iterator, List, Mapping, Sequence
 
 if os.name == "nt":
     import msvcrt
@@ -107,6 +108,8 @@ def resolve_repo_path(value: str, repo: Path, *, must_exist: bool = True) -> Pat
 
 
 def file_sha256(path: Path) -> str:
+    if not path.is_file():
+        raise BridgeError(f"Digest source must be a regular file: {path}")
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
@@ -1259,6 +1262,7 @@ def append_event(
     data: Mapping[str, Any] | None = None,
     dedupe_key: str = "",
     occurred_at: str = "",
+    expected_parent_event_id: str | None = None,
 ) -> Dict[str, Any]:
     repo = repo.resolve()
     thread_id = validate_id(thread_id, "bridge thread id")
@@ -1275,11 +1279,6 @@ def append_event(
     lock_path = threads_dir / f".{thread_id}.lock"
     with file_lock(lock_path):
         events = load_events(bridge_dir, thread_id)
-        if not jsonl_path.exists() and events:
-            atomic_write_text(
-                jsonl_path,
-                "".join(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n" for event in events),
-            )
         existing_project_ids = {
             str(event.get("bridge_project_id"))
             for event in events
@@ -1304,8 +1303,20 @@ def append_event(
         if dedupe_key:
             for event in events:
                 if event.get("dedupe_key") == dedupe_key:
+                    _verify_thread_events(repo, thread_id, events)
+                    expected = {
+                        "event_type": event_type, "actor": actor,
+                        "bridge_project_id": effective_project_id,
+                        "codex_session_id": codex_session_id,
+                        "gpt_pro_session_id": gpt_pro_session_id,
+                        "artifact": dict(artifact or {}), "data": dict(data or {}),
+                    }
+                    if any(event.get(key, "") != value for key, value in expected.items()):
+                        raise BridgeError("Duplicate event key has changed identity or payload")
                     return event
         parent = str(events[-1].get("event_id", "")) if events else ""
+        if expected_parent_event_id is not None and parent != expected_parent_event_id:
+            raise BridgeError("Ledger changed before append; revalidate the repair")
         timestamp = occurred_at or now_iso()
         event = {
             "schema_version": SCHEMA_VERSION,
@@ -1324,6 +1335,15 @@ def append_event(
         }
         if effective_project_id:
             event["bridge_project_id"] = effective_project_id
+        # This is the sole append authority: qualify history and candidate under
+        # the same lock. An evidenced late snapshot may repair its exact old
+        # exchange; the combined verifier never permits unrelated bad history.
+        _verify_thread_events(repo, thread_id, [*events, event], candidate_event_id=event["event_id"])
+        if not jsonl_path.exists() and events:
+            atomic_write_text(
+                jsonl_path,
+                "".join(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n" for item in events),
+            )
         with jsonl_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
             handle.flush()
@@ -1392,6 +1412,51 @@ def compact_thread_context(
     return "_Bridge thread exists, but its compact view exceeded the configured budget._"
 
 
+def recovered_snapshot_targets(repo: Path, events: Sequence[Mapping[str, Any]]) -> set[str]:
+    """Validate late snapshot receipts against notes in the actual sent bundle.
+
+    A late receipt is not a backdated event or a snapshot for a future round.
+    Unbundled exchanges cannot be repaired through this evidence route.
+    """
+    seen = {}
+    recovered = set()
+    for event in events:
+        data = event.get("data") or {}
+        target_id = data.get("recovery_for_exchange")
+        if target_id:
+            target = seen.get(target_id)
+            if (event.get("event_type") != "codex-snapshot" or not target
+                    or target.get("event_type") != "gpt-exchange" or target_id in recovered):
+                raise BridgeError("Invalid or duplicate snapshot recovery target")
+            if any(event.get(k, "") != target.get(k, "") for k in
+                   ("thread_id", "codex_session_id", "bridge_project_id")):
+                raise BridgeError("Snapshot recovery identity mismatch")
+            source = target.get("data") or {}
+            if not source.get("bundle") or data.get("source_bundle_sha256") != source.get("bundle_sha256"):
+                raise BridgeError("Snapshot recovery needs the exact sent bundle")
+            bundle = resolve_repo_path(source["bundle"], repo)
+            if file_sha256(bundle) != source["bundle_sha256"]:
+                raise BridgeError("Snapshot recovery bundle hash mismatch")
+            member = "context/codex-session-notes.md"
+            if data.get("source_member") != member:
+                raise BridgeError("Snapshot recovery must use bundled Codex notes")
+            artifact = event.get("artifact") or {}
+            if not artifact.get("path"):
+                raise BridgeError("Snapshot recovery artifact is missing")
+            snapshot = resolve_repo_path(artifact["path"], repo)
+            try:
+                with zipfile.ZipFile(bundle) as archive:
+                    if archive.namelist().count(member) != 1:
+                        raise BridgeError("Snapshot recovery bundle notes are missing or ambiguous")
+                    if snapshot.read_bytes() != archive.read(member):
+                        raise BridgeError("Recovered snapshot differs from sent bundle notes")
+            except (zipfile.BadZipFile, KeyError, OSError) as exc:
+                raise BridgeError(f"Cannot validate snapshot recovery: {exc}") from exc
+            recovered.add(target_id)
+        seen[event.get("event_id")] = event
+    return recovered
+
+
 def verify_thread_integrity(
     repo: Path,
     thread_id: str,
@@ -1402,8 +1467,154 @@ def verify_thread_integrity(
     repo = repo.resolve()
     thread_id = validate_id(thread_id, "bridge thread id")
     events = load_events(bridge_root(repo), thread_id)
+    return _verify_thread_events(repo, thread_id, events, require_complete_rounds=require_complete_rounds)
+
+
+def snapshot_binding_metadata(path):
+    labels = {"Bridge Thread ID":"bridge_thread_id","Bridge Project ID":"bridge_project_id",
+              "Codex Session ID":"codex_session_id"}
+    lines = path.read_text(encoding="utf-8").splitlines()
+    start = next((i for i,line in enumerate(lines[1:],1) if line.strip()),None)
+    if not lines or lines[0] != "# Codex Session Notes" or start is None or lines[start] != "## Metadata":
+        raise BridgeError("Legacy snapshot lacks its original Metadata section")
+    values = {}
+    for line in lines[start+1:]:
+        if line.startswith("## "):
+            break
+        match = re.fullmatch(r"- (Bridge Thread ID|Bridge Project ID|Codex Session ID): `([^`]*)`",line)
+        if match:
+            key = labels[match[1]]
+            if key in values:
+                raise BridgeError("Legacy snapshot has duplicate binding metadata")
+            values[key] = match[2]
+    return values
+
+
+def legacy_project_binding_source(repo, event):
+    """Qualify a raw empty Project only at a legacy recovery boundary."""
+    project = event.get("bridge_project_id", "")
+    expected = {"bridge_project_id":project,"bridge_thread_id":event["thread_id"],
+                "codex_session_id":event["codex_session_id"]}
+    snapshot = resolve_repo_path(event["artifact"]["path"],repo)
+    snapshot_meta = snapshot_binding_metadata(snapshot)
+    if not project or any(snapshot_meta.get(k) != v for k,v in expected.items()):
+        raise BridgeError("Legacy Project inference lacks matching immutable snapshot metadata")
+    from project_store import BridgeProjectStore
+    store = BridgeProjectStore(repo)
+    bound = store.project_for_thread(event["thread_id"])
+    if bound and bound != project:
+        raise BridgeError("Legacy Project inference conflicts with the current unique store binding")
+    session = bridge_root(repo)/"codex-sessions"/event["codex_session_id"]/"session.md"
+    if session.exists():
+        file_sha256(session)
+        session_meta = parse_metadata(session)
+        if any(session_meta.get(k) != v for k,v in expected.items()):
+            raise BridgeError("Legacy Project inference conflicts with the current session binding")
+        return "session-metadata/v1",session
+    if bound == project:
+        return "store-activity/v1",store.project_dir(project)/"activity.jsonl"
+    raise BridgeError("Legacy Project inference has no existing session or unique store binding")
+
+
+def verify_legacy_project_inference(repo, event, inference, *, candidate=False):
+    required = {"schema_version","project","binding_kind","binding_source","binding"}
+    if (not isinstance(inference,Mapping) or set(inference) != required
+            or inference["schema_version"] != "legacy-project-inference/v1"
+            or inference["project"] != event.get("bridge_project_id")
+            or not inference["project"]):
+        raise BridgeError("Legacy Project inference receipt is invalid")
+    expected = {"bridge_project_id":event["bridge_project_id"],"bridge_thread_id":event["thread_id"],
+                "codex_session_id":event["codex_session_id"]}
+    snapshot = resolve_repo_path(event["artifact"]["path"],repo)
+    snapshot_meta = snapshot_binding_metadata(snapshot)
+    if any(snapshot_meta.get(k) != v for k,v in expected.items()):
+        raise BridgeError("Legacy Project inference snapshot metadata disagrees with its event")
+    kind = inference["binding_kind"]
+    if kind == "session-metadata/v1":
+        source = bridge_root(repo)/"codex-sessions"/event["codex_session_id"]/"session.md"
+    elif kind == "store-activity/v1":
+        source = bridge_root(repo)/"projects"/event["bridge_project_id"]/"activity.jsonl"
+    else:
+        raise BridgeError("Legacy Project inference binding kind is unsupported")
+    for field in ("binding_source","binding"):
+        value = inference[field]
+        if not isinstance(value,Mapping) or set(value) != {"path","sha256"}:
+            raise BridgeError("Legacy Project inference binding descriptor is invalid")
+    if (inference["binding_source"]["path"] != repo_relative(source,repo)
+            or inference["binding_source"]["sha256"] != inference["binding"]["sha256"]):
+        raise BridgeError("Legacy Project inference source mapping mismatch")
+    frozen = resolve_repo_path(inference["binding"]["path"],repo)
+    if file_sha256(frozen) != inference["binding"]["sha256"]:
+        raise BridgeError("Legacy Project inference frozen binding digest drift")
+    if kind == "session-metadata/v1":
+        frozen_meta = parse_metadata(frozen)
+        if any(frozen_meta.get(k) != v for k,v in expected.items()):
+            raise BridgeError("Legacy Project inference frozen session identity mismatch")
+    else:
+        activity = [json.loads(line) for line in frozen.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if (any(item.get("bridge_project_id") != event["bridge_project_id"] for item in activity)
+                or not any(item.get("event_type") == "task-attached"
+                    and item.get("data",{}).get("bridge_thread_id") == event["thread_id"] for item in activity)):
+            raise BridgeError("Legacy Project inference frozen store identity mismatch")
+    if candidate:
+        actual_kind,actual_source = legacy_project_binding_source(repo,event)
+        if actual_kind != kind or actual_source != source or file_sha256(source) != inference["binding_source"]["sha256"]:
+            raise BridgeError("Legacy Project inference current source drift")
+
+
+def verify_snapshot_inputs(repo, event, *, legacy_project_inference=None, candidate=False):
+    proof = event.get("data", {}).get("input_proof")
+    if not isinstance(proof, Mapping) or set(proof) != {"inputs", "source_notes", "request", "delivery_prompt"}:
+        raise BridgeError("Snapshot lacks immutable input/source proof")
+    values = {}
+    for key, artifact in proof.items():
+        if key == "request" and artifact is None:
+            values[key] = None
+            continue
+        if not isinstance(artifact, Mapping) or set(artifact) != {"path", "sha256"}:
+            raise BridgeError(f"Snapshot {key} proof descriptor is invalid")
+        path = resolve_repo_path(artifact["path"], repo)
+        if file_sha256(path) != artifact["sha256"]:
+            raise BridgeError(f"Snapshot {key} proof digest drift")
+        values[key] = path.read_bytes()
+    inputs = json.loads(values["inputs"].decode("utf-8"))
+    required = {"thread", "session", "project", "goal", "question", "summary", "raw_history", "history_source", "title"}
+    if not isinstance(inputs, dict) or set(inputs) != required:
+        raise BridgeError("Snapshot input receipt shape is invalid")
+    digest = hashlib.sha256(json.dumps(inputs, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    project_matches = inputs["project"] == event.get("bridge_project_id", "")
+    if legacy_project_inference:
+        if project_matches or inputs["project"] != "":
+            raise BridgeError("Legacy Project inference only applies to an original empty Project input")
+        verify_legacy_project_inference(repo,event,legacy_project_inference,candidate=candidate)
+        project_matches = True
+    if (digest != event["data"].get("inputs_sha256") or inputs["thread"] != event["thread_id"]
+            or inputs["session"] != event["codex_session_id"] or not project_matches
+            or inputs["summary"] != values["source_notes"].decode("utf-8").replace("\r\n", "\n").replace("\r","\n").strip()):
+        raise BridgeError("Snapshot input/source identity or digest mismatch")
+    request = json.loads(values["request"].decode("utf-8")) if values["request"] is not None else None
+    if request is not None:
+        if (request.get("repo") != str(repo) or request.get("bridge_thread_id") != event["thread_id"]
+                or request.get("goal", "").strip() != inputs["goal"] or request.get("question", "").strip() != inputs["question"]):
+            raise BridgeError("Snapshot frozen request disagrees with inputs")
+    if request is None and values["delivery_prompt"].decode("utf-8").strip() != inputs["question"]:
+        raise BridgeError("Snapshot delivery prompt disagrees with frozen question")
+    if request is not None:
+        from material_prompt import delivery_prompt
+        if values["delivery_prompt"] != delivery_prompt(request).encode("utf-8"):
+            raise BridgeError("Snapshot delivery prompt disagrees with the frozen request grammar")
+    return {"inputs_sha256": digest, "source_notes": values["source_notes"], "request": request,
+            "delivery_prompt": values["delivery_prompt"],
+            "request_sha256": proof["request"]["sha256"] if proof["request"] else ""}
+
+
+def _verify_thread_events(repo, thread_id, events, *, require_complete_rounds=False, candidate_event_id=""):
+    """Shared verifier for stored ledgers and a proposed append-only repair."""
     if not events:
         raise BridgeError(f"Bridge thread has no events: {thread_id}")
+
+    recovered = recovered_snapshot_targets(repo, events)
+    used_recoveries = set()
 
     event_ids: set[str] = set()
     dedupe_keys: set[str] = set()
@@ -1414,6 +1625,13 @@ def verify_thread_integrity(
     artifact_count = 0
     bundle_count = 0
     project_ids: set[str] = set()
+    snapshot_identity = None
+    snapshot_round_key = ""
+    snapshot_proof = None
+    snapshot_event = None
+    snapshot_artifact = None
+    exchange_identity = None
+    exchange_turn = ""
 
     for index, event in enumerate(events, start=1):
         prefix = f"event {index}"
@@ -1461,6 +1679,12 @@ def verify_thread_integrity(
             dedupe_keys.add(dedupe_key)
 
         artifact = event.get("artifact")
+        if expected_actor and not artifact:
+            raise BridgeError(f"{prefix}: {event_type} artifact is required")
+        if expected_actor:
+            validate_id(str(event.get("codex_session_id", "")), "Codex session id")
+        if event_type in {"gpt-exchange", "codex-verdict"}:
+            validate_id(str(event.get("gpt_pro_session_id", "")), "GPT Pro session id")
         if artifact:
             if not isinstance(artifact, Mapping):
                 raise BridgeError(f"{prefix}: artifact must be an object")
@@ -1490,6 +1714,36 @@ def verify_thread_integrity(
             artifact_count += 1
 
         data = event.get("data") if isinstance(event.get("data"), Mapping) else {}
+        for evidence_key in ("raw_answer", "capture_proof", "raw_prompt", "notes_reference", "snapshot_input_receipt"):
+            if evidence_key not in data:
+                continue
+            evidence = data[evidence_key]
+            if not isinstance(evidence, Mapping) or not evidence.get("path") or not re.fullmatch(r"[0-9a-f]{64}", str(evidence.get("sha256", ""))):
+                raise BridgeError(f"{prefix}: invalid {evidence_key} artifact")
+            if evidence_key == "capture_proof":
+                from capture_provenance import private_proof
+                raw_path = Path(evidence["path"])
+                private_proof(raw_path if raw_path.is_absolute() else repo/raw_path)
+            evidence_path = resolve_repo_path(evidence["path"], repo)
+            if not evidence_path.is_file() or file_sha256(evidence_path) != evidence["sha256"]:
+                raise BridgeError(f"{prefix}: {evidence_key} artifact digest drift")
+            if evidence_key == "raw_answer" and evidence["sha256"] != data.get("answer_sha256"):
+                raise BridgeError(f"{prefix}: raw answer and exchange digest disagree")
+            if evidence_key == "raw_prompt" and evidence["sha256"] != data.get("prompt_sha256"):
+                raise BridgeError(f"{prefix}: raw prompt and exchange digest disagree")
+        if data.get("capture_route") == "browser-page-serialized" or data.get("answer_format") == "page-serialized-markdown":
+            from capture_provenance import PAGE_FORMAT, PAGE_ROUTE, private_proof, validate_page_serialization
+            from bridge_attempts import read_attempt
+            if data.get("capture_route") != PAGE_ROUTE or data.get("answer_format") != PAGE_FORMAT:
+                raise BridgeError(f"{prefix}: dishonest page serialization route/format")
+            if not data.get("raw_answer") or not data.get("capture_proof") or not data.get("attempt_id"):
+                raise BridgeError(f"{prefix}: page serialization lacks canonical raw/proof evidence")
+            attempt = read_attempt(repo, thread_id, data["attempt_id"])
+            proof_path = resolve_repo_path(data["capture_proof"]["path"], repo)
+            private_proof(proof_path)
+            proof = json.loads(proof_path.read_text(encoding="utf-8"))
+            validate_page_serialization(proof, attempt=attempt, prompt=attempt["prompt"],
+                answer=resolve_repo_path(data["raw_answer"]["path"], repo).read_bytes().decode("utf-8"))
         bundle_path = str(data.get("bundle", ""))
         bundle_sha = str(data.get("bundle_sha256", ""))
         if bundle_path:
@@ -1504,22 +1758,121 @@ def verify_thread_integrity(
             bundle_count += 1
 
         if event_type == "codex-snapshot":
+            if data.get("recovery_for_exchange"):
+                continue
             if pending_exchange:
                 raise BridgeError(f"{prefix}: snapshot cannot precede the pending Codex verdict")
+            if data.get("input_proof") or event_id == candidate_event_id:
+                snapshot_proof = verify_snapshot_inputs(repo, event)
+            else:
+                snapshot_proof = None  # Read-only compatibility for qualified old history.
+            identity = (event.get("codex_session_id", ""), event.get("bridge_project_id", ""))
+            if round_has_snapshot and identity != snapshot_identity:
+                raise BridgeError(f"{prefix}: round snapshot identity mismatch")
+            round_key = data.get("round_key", "")
+            if round_key:
+                validate_id(round_key, "round key")
+                if (dedupe_key != f"codex-snapshot-round:{round_key}" or not
+                        re.fullmatch(r"[0-9a-f]{64}", str(data.get("inputs_sha256", "")))):
+                    raise BridgeError(f"{prefix}: round snapshot key or input digest is invalid")
+            if round_has_snapshot and (round_key or snapshot_round_key):
+                raise BridgeError(f"{prefix}: another round snapshot is already available")
+            snapshot_identity = identity
+            snapshot_round_key = round_key
+            snapshot_event = event
+            snapshot_artifact = artifact
             round_has_snapshot = True
         elif event_type == "gpt-exchange":
+            if event_id in recovered:
+                if round_has_snapshot or pending_exchange:
+                    raise BridgeError(f"{prefix}: snapshot recovery is redundant or overlaps an open round")
+                round_has_snapshot = True
+                snapshot_identity = (event.get("codex_session_id", ""), event.get("bridge_project_id", ""))
+                used_recoveries.add(event_id)
             if not round_has_snapshot or pending_exchange:
                 raise BridgeError(f"{prefix}: GPT exchange has no available Codex snapshot")
+            if (event.get("codex_session_id", ""), event.get("bridge_project_id", "")) != snapshot_identity:
+                raise BridgeError(f"{prefix}: exchange does not belong to the round snapshot")
+            if data.get("snapshot_input_receipt"):
+                receipt = json.loads(resolve_repo_path(data["snapshot_input_receipt"]["path"],repo).read_text(encoding="utf-8"))
+                if (not snapshot_event or receipt.get("schema_version") != "snapshot-inputs/v1"
+                        or receipt.get("snapshot_event_id") != snapshot_event["event_id"]
+                        or receipt.get("snapshot_artifact") != snapshot_artifact
+                        or receipt.get("round_key") != snapshot_round_key
+                        or receipt.get("inputs_sha256") != snapshot_event["data"].get("inputs_sha256")):
+                    raise BridgeError(f"{prefix}: prospective snapshot receipt identity mismatch")
+                original_proof = snapshot_event["data"].get("input_proof")
+                if original_proof and receipt.get("input_proof") != original_proof:
+                    raise BridgeError(f"{prefix}: prospective receipt cannot replace immutable snapshot proof")
+                if original_proof and receipt.get("project_inference"):
+                    raise BridgeError(f"{prefix}: new snapshot cannot use legacy Project inference")
+                if not original_proof:
+                    handoff = receipt.get("job_handoff")
+                    if not isinstance(handoff,dict) or set(handoff) != {"path","sha256"}:
+                        raise BridgeError(f"{prefix}: legacy prospective proof lacks frozen job/handoff anchor")
+                    handoff_path = resolve_repo_path(handoff["path"],repo)
+                    if file_sha256(handoff_path) != handoff["sha256"]:
+                        raise BridgeError(f"{prefix}: legacy prospective handoff digest drift")
+                    expected_job = hashlib.sha256((str(repo)+"\n"+handoff["sha256"]).encode()).hexdigest()
+                    frozen_handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+                    request_artifact = receipt.get("input_proof",{}).get("request") or {}
+                    if (snapshot_round_key != expected_job or frozen_handoff.get("repo") != str(repo)
+                            or frozen_handoff.get("bridge_thread_id") != thread_id
+                            or frozen_handoff.get("request_sha256") != request_artifact.get("sha256")):
+                        raise BridgeError(f"{prefix}: legacy prospective job/request identity mismatch")
+                snapshot_proof = verify_snapshot_inputs(repo,{**snapshot_event,
+                    "data":{**snapshot_event["data"],"input_proof":receipt.get("input_proof")}},
+                    legacy_project_inference=receipt.get("project_inference"),candidate=event_id == candidate_event_id)
+            if snapshot_round_key and (snapshot_proof or event_id == candidate_event_id) and data.get("round_key") != snapshot_round_key:
+                raise BridgeError(f"{prefix}: exchange round key does not match its snapshot")
+            if event_id == candidate_event_id and snapshot_proof is None:
+                raise BridgeError(f"{prefix}: round snapshot lacks immutable input proof")
+            if snapshot_proof:
+                if (data.get("snapshot_inputs_sha256") != snapshot_proof["inputs_sha256"]
+                        or data.get("snapshot_request_sha256", "") != snapshot_proof["request_sha256"]):
+                    raise BridgeError(f"{prefix}: exchange snapshot input/request digest mismatch")
+                if not data.get("raw_prompt") or not data.get("notes_reference"):
+                    raise BridgeError(f"{prefix}: exchange lacks actual prompt/notes reference proof")
+                prompt_bytes = resolve_repo_path(data["raw_prompt"]["path"], repo).read_bytes()
+                frozen_prompt = snapshot_proof["delivery_prompt"]
+                if (prompt_bytes != frozen_prompt if snapshot_proof["request"] is not None
+                        else prompt_bytes not in (frozen_prompt,frozen_prompt+b"\n") and frozen_prompt != prompt_bytes+b"\n"):
+                    raise BridgeError(f"{prefix}: actual prompt differs from frozen snapshot delivery")
+                notes_bytes = resolve_repo_path(data["notes_reference"]["path"], repo).read_bytes()
+                snapshot_bytes = resolve_repo_path(snapshot_artifact["path"], repo).read_bytes()
+                if notes_bytes not in (snapshot_bytes, snapshot_proof["source_notes"]):
+                    raise BridgeError(f"{prefix}: actual notes reference differs from the round snapshot")
+                if bundle_path:
+                    try:
+                        with zipfile.ZipFile(bundle) as archive:
+                            member = "context/codex-session-notes.md"
+                            if archive.namelist().count(member) != 1 or archive.read(member) != snapshot_proof["source_notes"]:
+                                raise BridgeError(f"{prefix}: sent bundle notes differ from frozen snapshot source")
+                    except zipfile.BadZipFile as exc:
+                        raise BridgeError(f"{prefix}: sent bundle is not a valid ZIP") from exc
+            exchange_identity = (event.get("codex_session_id", ""), event.get("gpt_pro_session_id", ""),
+                                 event.get("bridge_project_id", ""))
+            exchange_turn = artifact["path"]
             pending_exchange = True
         elif event_type == "codex-verdict":
             if not pending_exchange:
                 raise BridgeError(f"{prefix}: Codex verdict has no pending GPT exchange")
+            if ((event.get("codex_session_id", ""), event.get("gpt_pro_session_id", ""),
+                 event.get("bridge_project_id", "")) != exchange_identity or data.get("turn") != exchange_turn):
+                raise BridgeError(f"{prefix}: verdict does not belong to the pending GPT exchange")
             pending_exchange = False
             round_has_snapshot = False
+            snapshot_identity = None
+            snapshot_round_key = ""
+            snapshot_proof = None
+            snapshot_event = None
+            snapshot_artifact = None
             complete_rounds += 1
         elif not event_type.startswith("legacy-"):
             raise BridgeError(f"{prefix}: unsupported event type {event_type!r}")
 
+    if used_recoveries != recovered:
+        raise BridgeError("Snapshot recovery was not consumed by its exact exchange")
     if require_complete_rounds and (pending_exchange or round_has_snapshot):
         raise BridgeError("Bridge thread ends with an incomplete round")
     return {
@@ -1531,6 +1884,7 @@ def verify_thread_integrity(
         "artifact_count": artifact_count,
         "bundle_count": bundle_count,
         "round_complete": not pending_exchange and not round_has_snapshot,
+        "recovered_snapshot_count": len(used_recoveries),
     }
 
 

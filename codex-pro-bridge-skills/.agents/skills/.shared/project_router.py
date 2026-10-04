@@ -133,7 +133,7 @@ def resolve_route(
         )
 
     store = BridgeProjectStore(repo)
-    project_ids = store.list_project_ids()
+    project_ids = store.legacy_project_ids()
     current_project_id = ""
     if bridge_project_id:
         current_project_id = store.resolve_project_id(bridge_project_id)

@@ -9,10 +9,88 @@ from unittest.mock import Mock, patch
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path[:0] = [str(SCRIPTS), str(SCRIPTS.parents[1] / ".shared")]
 from bridge_store import BridgeError
-from bridge_runtime.browser import Browser, unique_uid
+from bridge_runtime.browser import Browser, unique_uid, send_button_uid
+
 
 
 class NestedControlsTest(unittest.TestCase):
+    def test_fill_targets_composer_not_answer_code_editor(self):
+        b = Browser(Mock(), {"composer":"form [role=textbox]"})
+        b.page_id = 7
+        b.composer_text = Mock(side_effect=["", "frozen prompt"])
+        b.assert_identity = Mock()
+        b.owned_evaluate = Mock(return_value="询问 ChatGPT")
+        b.snapshot = Mock(return_value='uid=1 textbox "编辑代码"\nuid=2 textbox "询问 ChatGPT"')
+        b.fill_prompt("frozen prompt")
+        b.client.call.assert_called_once_with("fill",pageId=7,uid="2",value="frozen prompt")
+
+    def test_copy_focus_checks_identity_before_and_after_exact_tab_selection(self):
+        b = Browser(Mock(), {})
+        b.page_id = 7
+        events = []
+        b.assert_identity = Mock(side_effect=lambda: events.append("identity"))
+        b.client.call.side_effect = lambda *a, **kw: events.append("select")
+        b.owned_evaluate = Mock(side_effect=lambda *a: events.append("guarded-focus") or True)
+        b.focus_for_copy()
+        self.assertEqual(events, ["identity", "select", "guarded-focus"])
+        b.client.call.assert_called_once_with("select_page", pageId=7, bringToFront=True)
+        b.owned_evaluate.assert_called_once_with("() => document.hasFocus()")
+
+    def test_copy_focus_rejects_identity_drift_and_missing_focus(self):
+        b = Browser(Mock(), {})
+        b.page_id = 7
+        b.assert_identity = Mock(side_effect=BridgeError("identity drift"))
+        with self.assertRaisesRegex(BridgeError, "identity drift"):
+            b.focus_for_copy()
+        b.client.call.assert_not_called()
+        b.assert_identity.side_effect = None
+        b.owned_evaluate = Mock(side_effect=BridgeError("identity drift"))
+        with self.assertRaisesRegex(BridgeError, "identity drift"):
+            b.focus_for_copy()
+        b.owned_evaluate.side_effect = None
+        b.owned_evaluate.return_value = False
+        with self.assertRaisesRegex(BridgeError, "clipboard focus"):
+            b.focus_for_copy()
+
+    def test_send_alias_requires_verified_composer_submit_button(self):
+        b = Browser(Mock(), {})
+        b.snapshot = Mock(return_value='uid=1 button "发送"')
+        b.assert_identity = Mock()
+        b.evaluate = Mock(return_value=False)
+        with self.assertRaisesRegex(BridgeError, "Send button"):
+            send_button_uid(b, ["发送提示词"])
+        b.evaluate.return_value = True
+        self.assertEqual(send_button_uid(b, ["发送提示词"]), "1")
+        b.snapshot.return_value = 'uid=1 button "发送"\nuid=2 button "发送"'
+        with self.assertRaisesRegex(BridgeError, "ambiguity"):
+            send_button_uid(b, ["发送提示词"])
+
+    def test_exact_send_label_needs_no_fallback_observation(self):
+        b = Browser(Mock(), {})
+        b.snapshot = Mock(return_value='uid=1 button "Send"')
+        b.evaluate = Mock()
+        self.assertEqual(send_button_uid(b, ["Send"]), "1")
+        b.evaluate.assert_not_called()
+
+    def test_account_menu_observation_is_closed_on_success_and_failure(self):
+        b = Browser(Mock(), {"account_menu_labels": ["Profile"]})
+        b.click, b.press = Mock(), Mock()
+        b._read_labels = Mock(return_value={"account": "Personal", "workspace": "Personal"})
+        self.assertEqual(b.read_labels(("account", "workspace"))["account"], "Personal")
+        b.click.assert_called_once_with(["Profile"], roles=("button",))
+        b.press.assert_called_once_with("Escape")
+        b._read_labels.side_effect = BridgeError("ambiguous account")
+        with self.assertRaisesRegex(BridgeError, "ambiguous"):
+            b.read_labels(("account",))
+        self.assertEqual(b.press.call_count, 2)
+
+    def test_model_read_does_not_open_account_menu(self):
+        b = Browser(Mock(), {"account_menu_labels": ["Profile"]})
+        b.click = Mock()
+        b._read_labels = Mock(return_value={"model": "Latest"})
+        self.assertEqual(b.read_labels(("model",)), {"model": "Latest"})
+        b.click.assert_not_called()
+
     def test_ready_attachment_requires_one_exact_idle_card(self):
         b = Browser(Mock(), {})
         for cards, expected in [([], False), ([{"name":"x.zip","busy":False}], True),
@@ -86,8 +164,10 @@ class NestedControlsTest(unittest.TestCase):
         self.assertEqual([c.args[0] for c in b.client.call.call_args_list],["click","upload_file"])
         self.assertEqual(b.client.call.call_args_list[1].kwargs["uid"],"2")
 
-    def browser(self, initial="高", stuck=False, focused=True):
-        b = Browser(Mock(), {"control_layout":"nested-slider", "thinking_menu_labels":["高","极高"],
+    def browser(self, initial="高", stuck=False, focused=True, outer_menu=False):
+        b = Browser(Mock(), {"control_layout":"nested-slider",
+            "thinking_label_location":"outer-menu" if outer_menu else "closed-trigger",
+            "thinking_menu_labels":["高","极高"],
             "model_menu_labels":["选择模型"], "thinking_positions":{"极高":3},
             "thinking_slider":"#slider", "thinking_keyboard_control":"#keys"})
         b.page_id, b.owner, b.url = 1, "owner", "https://chatgpt.com/g/g-p-test/project"
@@ -137,6 +217,23 @@ class NestedControlsTest(unittest.TestCase):
     def test_native_disabled_snapshot_is_not_clickable(self):
         with self.assertRaises(BridgeError):
             unique_uid('uid=1 button "Send" disableable disabled', ("button",), ["Send"])
+
+    def test_outer_menu_reads_visible_thinking_label_before_model_submenu(self):
+        b = self.browser(outer_menu=True)
+        receipt = b.adjust_controls(self.request())
+        self.assertEqual(receipt["initial_thinking_intensity"], "高")
+        self.assertEqual(receipt["selected_thinking_intensity"], "极高")
+        self.assertEqual(receipt["thinking_label_location"], "outer-menu")
+        self.assertEqual(receipt["counts"]["thinking_control_open"], 3)
+        self.assertEqual(receipt["counts"]["model_menu_open"], 2)
+        self.assertEqual([c.args[0] for c in b.press.call_args_list].count("ArrowRight"), 1)
+
+    def test_send_uid_uses_effective_overlay_label(self):
+        b = Browser(Mock(), {"send_labels": ["Send"]})
+        b.page_id, b.owner, b.url = 7, "owner", "https://chatgpt.com/g/g-p-test/project"
+        b.assert_identity = Mock()
+        b.snapshot = Mock(return_value='uid=7_1 button "Send"')
+        self.assertEqual(send_button_uid(b, b.ui["send_labels"]), "7_1")
 
 
 if __name__ == "__main__":

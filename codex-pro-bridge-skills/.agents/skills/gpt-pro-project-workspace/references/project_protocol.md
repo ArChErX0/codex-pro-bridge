@@ -6,14 +6,17 @@ or verifying Project-aware Codex Pro Bridge work.
 ## Identity
 
 ```text
-one local root
-  -> zero or one Bridge Project
+one local root + optional Codex root thread id
+  -> zero or one Bridge Project per identity
   -> zero or one ChatGPT Project binding
 ```
 
-The local root and remote Project ID are unique identities. A title is mutable
-display metadata. Additional directories may be approved as task evidence, but
-they do not become additional Project bindings.
+An unscoped local root retains its legacy identity. Codex-scoped Projects have an
+immutable `codex_root_thread_id`; selection without scope only resolves legacy.
+A title is mutable display metadata. An explicit user target may reuse a remote
+Project across roots while keeping local tasks and owner conversations separate;
+this requires the shared-remote opt-in. Additional evidence directories do not
+create bindings. See [Codex scope](../../gpt-pro-question-window/references/codex_scope.md).
 
 ## Execution shapes
 

@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source", "page_id", "conversation_url", "owner_token", "observed_at", "complete", "truncated", "messages", "source_sha256", "prompt_sha256", "user_sha256", "answer_sha256"],
+  "properties": {
+    "schema_version": {"const": "page-message-serialization/v1"},
+    "source": {"const": "react-message-props/v1"},
+    "page_id": {"type": "string", "minLength": 1},
+    "conversation_url": {"type": "string", "minLength": 1},
+    "owner_token": {"type": "string", "minLength": 1},
+    "observed_at": {"type": "string", "minLength": 1},
+    "complete": {"const": true},
+    "truncated": {"const": false},
+    "messages": {"type": "array", "minItems": 2, "maxItems": 2, "items": {
+      "type": "object", "additionalProperties": false, "required": ["message", "node"],
+      "properties": {"message": {"type": "object"}, "node": {"type": ["object", "null"]}}
+    }},
+    "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "prompt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "user_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "answer_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

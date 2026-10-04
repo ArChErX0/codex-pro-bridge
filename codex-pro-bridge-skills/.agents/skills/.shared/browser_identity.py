@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from bridge_store import (
     BridgeError,
@@ -25,10 +25,16 @@ def conversation_identity_from_url(value: str) -> tuple[str, str]:
         raise BridgeError("Observed page URL must be an https ChatGPT URL")
     parts = [part for part in parsed.path.split("/") if part]
     if len(parts) == 2 and parts[0] == "c":
-        return "", parts[1]
-    if len(parts) == 4 and parts[0] == "g" and parts[2] == "c":
-        return parts[1], parts[3]
-    raise BridgeError("Observed page URL must identify one exact ChatGPT conversation")
+        project, conversation = "", parts[1]
+    elif len(parts) == 4 and parts[0] == "g" and parts[2] == "c":
+        project, conversation = parts[1], parts[3]
+    else:
+        raise BridgeError("Observed page URL must identify one exact ChatGPT conversation")
+    # The UI first renders an optimistic local route after Send. It is not a
+    # server conversation identity and must never be promoted or persisted.
+    if unquote(conversation).lower().startswith("local-chatgpt:"):
+        raise BridgeError("ChatGPT conversation URL is provisional; await the server conversation ID without resending")
+    return project, conversation
 
 
 def project_url_matches(url_project_id: str, expected_project_id: str) -> bool:
@@ -185,6 +191,14 @@ def _hold(reason: str, *, claim: Mapping[str, Any], **extra: Any) -> Dict[str, A
         "tab_bound": bool(claim.get("tab_bound", False)),
         **extra,
     }
+
+
+def _is_exact_sources_home(url: str, expected_project_id: str) -> bool:
+    """Recognize only the unowned Sources view of this exact Project home."""
+    parsed = urlparse(url)
+    if parsed.fragment or parsed.query != "tab=sources":
+        return False
+    return parsed.path == f"/g/{expected_project_id}/project"
 
 
 def resolve_owned_tab(
@@ -407,10 +421,30 @@ def resolve_owned_tab(
             "owner_selected_count": 1,
         }
     if matches["noncanonical_project_home"]:
+        sources_pages = matches["noncanonical_project_home"]
+        if (
+            not claim.get("tab_bound", False)
+            and expected_project_id
+            and all(
+                _is_exact_sources_home(page["url"], expected_project_id)
+                and owner_map.get(page["page_id"], "") == ""
+                for page in sources_pages
+            )
+        ):
+            return {
+                "action": "open-canonical-tab",
+                "reason": "unowned-sources-home-preserved",
+                "canonical_url": canonical_bootstrap_url(expected_project_id),
+                "tab_owner_token": owner_token,
+                "tab_bound": False,
+                "matching_page_count": 0,
+                "owner_selected_count": 0,
+                "preserved_page_ids": [page["page_id"] for page in sources_pages],
+            }
         return _hold(
             "noncanonical-bootstrap-tab",
             claim=claim,
-            page_ids=[page["page_id"] for page in matches["noncanonical_project_home"]],
+            page_ids=[page["page_id"] for page in sources_pages],
         )
     return {
         "action": "open-canonical-tab",

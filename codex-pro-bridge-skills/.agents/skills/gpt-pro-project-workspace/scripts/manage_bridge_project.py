@@ -29,6 +29,7 @@ def main() -> int:
     create.add_argument("--project-id", required=True)
     create.add_argument("--title", default="")
     create.add_argument("--brief", default="", help="Existing local project brief.")
+    create.add_argument("--codex-root-thread-id", default="")
 
     update = subparsers.add_parser(
         "update", help="Update the local Project title or project brief."
@@ -47,6 +48,7 @@ def main() -> int:
     bind.add_argument("--sync-mode", choices=sorted(SYNC_MODES), default="append_only")
     bind.add_argument("--max-project-files", type=int, default=0)
     bind.add_argument("--rebind", action="store_true")
+    bind.add_argument("--allow-shared-remote", action="store_true")
 
     verify_binding = subparsers.add_parser(
         "verify-binding", help="Record the currently observed ChatGPT Project identity."
@@ -91,6 +93,7 @@ def main() -> int:
     attach.add_argument("--goal", default="")
     attach.add_argument("--status", choices=sorted(TASK_STATUSES), default="active")
     attach.add_argument("--depends-on", action="append", default=[])
+    attach.add_argument("--owner-agent-id", default="")
 
     update_task = subparsers.add_parser(
         "update-task", help="Update Project task title, goal, or dependencies."
@@ -114,7 +117,10 @@ def main() -> int:
         store = BridgeProjectStore(Path(args.repo))
         if args.command == "create":
             result = store.create_project(
-                args.project_id, title=args.title, brief_path=args.brief
+                args.project_id,
+                title=args.title,
+                brief_path=args.brief,
+                codex_root_thread_id=args.codex_root_thread_id,
             )
         elif args.command == "update":
             project_id = store.resolve_project_id(args.bridge_project_id)
@@ -136,6 +142,7 @@ def main() -> int:
                 max_project_files=args.max_project_files,
                 verified=False,
                 allow_rebind=args.rebind,
+                allow_shared_remote=args.allow_shared_remote,
             )
         elif args.command == "verify-binding":
             project_id = store.resolve_project_id(args.bridge_project_id)
@@ -168,6 +175,7 @@ def main() -> int:
                 goal=args.goal,
                 status=args.status,
                 depends_on=args.depends_on,
+                owner_agent_id=args.owner_agent_id,
             )
         elif args.command == "update-task":
             project_id = store.resolve_project_id(args.bridge_project_id)

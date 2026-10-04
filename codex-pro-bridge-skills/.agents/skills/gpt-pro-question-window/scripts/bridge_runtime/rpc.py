@@ -132,11 +132,44 @@ def text_content(result):
 
 
 def evaluated(result):
-    import re
+    """Decode exactly one evaluate_script payload.
+
+    The MCP wraps the script value in one outer fenced envelope, optionally
+    behind its single prose header line. The value is a JSON string that may
+    itself contain code fences, so the payload is located by decoding one JSON
+    value and then validating the closing fence: scanning for fence pairs
+    instead would cut one result into several blocks. The MCP may append its
+    navigation receipt; accept that only when the payload independently reports
+    the exact same URL. This is metadata, not permission to navigate or rebind.
+    """
     text = text_content(result).strip()
-    blocks = re.findall(r"```(?:json)?\s*([\s\S]*?)```", text)
-    if len(blocks) == 1:
-        return json.loads(blocks[0])
-    if not blocks:
+    if not text:
+        raise RpcError("Empty evaluate_script result")
+    try:
         return json.loads(text)
-    raise RpcError("Ambiguous evaluate_script result")
+    except json.JSONDecodeError:
+        pass
+    start = text.find("```")
+    if start < 0:
+        raise RpcError("evaluate_script result is neither raw JSON nor a fenced JSON envelope")
+    if len([line for line in text[:start].splitlines() if line.strip()]) > 1:
+        raise RpcError("evaluate_script result carries prose before its JSON envelope")
+    header_end = text.find("\n", start)
+    if header_end < 0:
+        raise RpcError("evaluate_script fenced envelope is not followed by a payload")
+    info = text[start + 3:header_end].strip().lower()
+    if info not in ("", "json"):
+        raise RpcError(f"evaluate_script fenced envelope declares unsupported format {info!r}")
+    try:
+        value, end = json.JSONDecoder().raw_decode(text, header_end + 1)
+    except ValueError as exc:
+        raise RpcError(f"evaluate_script envelope does not hold one complete JSON value: {exc}") from exc
+    tail = text[end:].strip()
+    observed_url = value.get("url") if isinstance(value, dict) else None
+    navigation_tail = None
+    if isinstance(observed_url, str) and observed_url and not any(
+            c in observed_url for c in "\r\n"):
+        navigation_tail = "```\nPage navigated to " + observed_url + "."
+    if tail != "```" and tail != navigation_tail:
+        raise RpcError("evaluate_script result carries content after its JSON envelope")
+    return value

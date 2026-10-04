@@ -37,6 +37,7 @@ from bridge_store import (
 )
 from executor_handoff import CONTEXT_POLICIES, HANDOFF_V2, validate_handoff
 from model_controls import MODEL_SELECTION_KINDS
+from collaboration_scope import owner_thread_id, scope_fields, scoped_project
 from project_router import resolve_route
 from project_store import (
     BridgeProjectStore,
@@ -104,7 +105,7 @@ def _publish_transaction(output_dir: Path, artifacts: dict[str, str]) -> None:
 def _local_project_id(store: BridgeProjectStore, explicit: str, *, create: bool) -> str:
     if explicit:
         return store.resolve_project_id(explicit)
-    project_ids = store.list_project_ids()
+    project_ids = store.legacy_project_ids()
     if len(project_ids) > 1:
         raise BridgeError("Multiple Bridge Projects are visible; specify --bridge-project-id")
     if project_ids:
@@ -151,6 +152,7 @@ def _target_project(
         remote_project_id=remote_id,
         verified=False,
         allow_rebind=True,
+        allow_shared_remote=bool(store.load_project(project_id).get("codex_root_thread_id")),
     )
     binding = store.load_binding(project_id)
     return (
@@ -207,6 +209,16 @@ def _context_policy(args: argparse.Namespace, files: list[str]) -> tuple[str, in
 
 
 def prepare(args: argparse.Namespace) -> dict[str, Any]:
+    # Preparing is local and short; serialize selection, attachment and publication.
+    # Browser execution keeps its existing separate ownership/attempt locks.
+    repo = Path(args.repo).expanduser().resolve()
+    if not repo.is_dir():
+        raise BridgeError(f"Repository root is not a directory: {repo}")
+    with file_lock(bridge_root(repo) / ".prepare.lock"):
+        return _prepare(args)
+
+
+def _prepare(args: argparse.Namespace) -> dict[str, Any]:
     repo = Path(args.repo).expanduser().resolve()
     if not repo.is_dir():
         raise BridgeError(f"Repository root is not a directory: {repo}")
@@ -216,6 +228,12 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         raise BridgeError("--standalone cannot be combined with --bridge-project-id")
     if args.remote_project_id and not args.target_project_url:
         raise BridgeError("--remote-project-id requires --target-project-url")
+    scope = scope_fields(vars(args))
+    if scope and args.standalone:
+        raise BridgeError("Codex root/owner scope cannot use --standalone")
+    round_id = getattr(args, "round_id", "")
+    if round_id:
+        validate_id(round_id, "round id")
     goal = args.goal.strip()
     task = (args.task or args.goal).strip()
     if not goal or not task:
@@ -254,27 +272,47 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     binding_action = "none"
     target_changed = False
     explicit_target = bool(args.target_project_url)
+    if scope:
+        project_id = scoped_project(store, scope["codex_root_thread_id"], args.bridge_project_id)
     if explicit_target:
         project_id, remote_id, remote_url, binding_action, target_changed = _target_project(
             store,
-            bridge_project_id=args.bridge_project_id,
+            bridge_project_id=project_id or args.bridge_project_id,
             target_url=args.target_project_url,
             remote_project_id=args.remote_project_id,
         )
         requested_scope = "project"
+    elif scope:
+        requested_scope = "project"
+        binding = store.load_binding(project_id)
+        if not binding.get("remote_project_id"):
+            raise BridgeError(
+                f"create-and-bind-project: {project_id}; create the root's ChatGPT Project "
+                "with the Project skill (or use the user's explicit target), then prepare again"
+            )
     elif args.standalone:
         requested_scope = "standalone"
     else:
         project_id = _local_project_id(store, args.bridge_project_id, create=False)
         requested_scope = "auto"
 
+    supplied_thread = getattr(args, "bridge_thread_id", "")
+    if scope:
+        expected_thread = owner_thread_id(
+            scope["codex_root_thread_id"], scope["owner_agent_id"],
+            store.load_binding(project_id).get("remote_project_id", ""),
+        )
+        if supplied_thread and supplied_thread != expected_thread:
+            raise BridgeError("Explicit Bridge Thread does not match root/owner/Project")
+        supplied_thread = expected_thread
     route = resolve_route(
         repo,
         task=task,
         requested_scope=requested_scope,
         requires_external_reasoning=True,
         bridge_project_id=project_id,
-        force_new_thread=explicit_target and target_changed,
+        bridge_thread_id=supplied_thread,
+        force_new_thread=explicit_target and target_changed and not supplied_thread,
         attach=False,
     )
     if route.requires_confirmation:
@@ -294,7 +332,8 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
             raise BridgeError("Project route did not resolve a complete Project identity")
         if not explicit_target:
             binding_action = _binding_action(store, project_id, explicit_target=False)
-        store.attach_thread(project_id, route.bridge_thread_id, title=task, goal=goal)
+        store.attach_thread(project_id, route.bridge_thread_id, title=task, goal=goal,
+                            **({"owner_agent_id": scope["owner_agent_id"]} if scope else {}))
     else:
         project_id = ""
         remote_id = ""
@@ -302,10 +341,6 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         binding_action = "none"
 
     thread_id = route.bridge_thread_id
-    output_dir = bridge_root(repo) / "executor-preparations" / thread_id
-    request_path = output_dir / "request.json"
-    handoff_path = output_dir / "executor_handoff.json"
-    receipt_path = output_dir / "receipt.json"
     gpt_session_id = default_gpt_session_id(thread_id)
     session_meta = parse_metadata(
         bridge_root(repo) / "gpt-pro-sessions" / gpt_session_id / "session.md"
@@ -328,8 +363,20 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     }
     if project_id:
         request["bridge_project_id"] = project_id
+    request.update(scope)
     request_text = _canonical_json(request)
     request_sha = _sha256_text(request_text)
+    output_dir = bridge_root(repo) / "executor-preparations" / thread_id
+    if scope or round_id:
+        fingerprint = _sha256_text(_canonical_json({
+            "request_sha256": request_sha, "requested_model": requested_model,
+            "model_selection_kind": selection_kind, "thinking": requested_intensity,
+            "business_deadline": args.business_deadline or None,
+        }))
+        output_dir /= round_id or fingerprint[:24]
+    request_path = output_dir / "request.json"
+    handoff_path = output_dir / "executor_handoff.json"
+    receipt_path = output_dir / "receipt.json"
     # A prepared round is immutable.  Re-running the same parent command after
     # the task has been attached must return the original receipt instead of
     # letting the router's now-reuse policy rewrite the handoff.
@@ -357,6 +404,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         if existing_handoff.get("request_sha256") != request_sha:
             raise BridgeError(f"Existing preparation handoff conflicts: {handoff_path}")
         expected_fields = {
+            **scope,
             "bridge_project_id": project_id,
             "remote_project_id": remote_id,
             "target_project_url": remote_url,
@@ -376,6 +424,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         if existing_receipt.get("handoff_sha256") != existing_handoff_sha:
             raise BridgeError(f"Existing preparation receipt conflicts with handoff: {receipt_path}")
         expected_receipt_fields = {
+            **scope,
             "status": "ready",
             "stage": "prepared",
             "schema_version": HANDOFF_V2,
@@ -419,6 +468,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         print(json.dumps(existing_receipt, ensure_ascii=False, indent=2, sort_keys=True))
         return existing_receipt
     handoff = {
+        **scope,
         "schema_version": HANDOFF_V2,
         "mode": "prepare-and-run",
         "repo": str(repo),
@@ -462,6 +512,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
             raise BridgeError(f"Existing preparation receipt conflicts with handoff: {receipt_path}")
         prepared_at = str(existing_receipt.get("prepared_at", "")) or prepared_at
     receipt = {
+        **scope,
         "status": "ready",
         "stage": "prepared",
         "schema_version": HANDOFF_V2,
@@ -509,6 +560,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo", required=True)
     parser.add_argument("--goal", required=True)
     parser.add_argument("--task", default="")
+    parser.add_argument("--codex-root-thread-id", default="")
+    parser.add_argument("--owner-agent-id", default="")
+    parser.add_argument("--bridge-thread-id", default="")
+    parser.add_argument("--round-id", default="", help="Explicit new round for an intentionally repeated question")
     parser.add_argument("--question-file", required=True)
     parser.add_argument("--notes", required=True)
     parser.add_argument("--file", dest="files", action="append", default=[])

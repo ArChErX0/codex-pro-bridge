@@ -1,6 +1,6 @@
 ---
 name: gpt-pro-project-workspace
-description: Bind one local research repository to one existing or new ChatGPT Project, synchronize stable Project Sources, inspect Project tasks, or repair Project routing. Use when the user mentions a ChatGPT Project, shared files across conversations, several research sessions, project binding, or Project-aware Codex Pro Bridge work; normal external questions still enter through gpt-pro-question-window, which resolves the route automatically.
+description: Manage repository or Codex-root ChatGPT Project bindings, synchronize stable Project Sources, inspect Project tasks, or repair routing. Use for Project binding and shared context; external questions enter through gpt-pro-question-window.
 ---
 
 # GPT Pro Project Workspace
@@ -17,7 +17,7 @@ binding, source synchronization, promotion, or repair.
 
 ## Invariants
 
-- One local repository has at most one Bridge Project.
+- One local repository has at most one legacy Bridge Project and one scoped Bridge Project per Codex root thread. Codex collaboration uses the [root/owner binding](../gpt-pro-question-window/references/codex_scope.md); unscoped calls never select another root's Project implicitly.
 - One Bridge Project has at most one current ChatGPT Project binding.
 - Never bind or verify by title alone. Record the visible Project ID/URL and the
   observed account/workspace.
@@ -29,6 +29,9 @@ binding, source synchronization, promotion, or repair.
   thread and one review round.
 
 ## Automatic route
+
+Codex-scoped work follows the root/owner entry above. The repository-default rules
+below describe legacy calls; they must not override an explicit Codex root.
 
 Before an external round, Codex decides whether external reasoning is useful. For a
 new Bridge Executor round, `gpt-pro-question-window/scripts/prepare_bridge_execution.py`
@@ -61,7 +64,10 @@ context. Reconcile the selected Project Sources and preview the route again.
 ## Bind an existing Project
 
 1. Create the local Project identity with
-   `scripts/manage_bridge_project.py create` if it does not exist.
+   `scripts/manage_bridge_project.py create` if it does not exist. For Codex-scoped work,
+   include `--codex-root-thread-id` and retain the ID returned by preparation; do not create
+   a second identity for that root. If no remote target was specified, create a new
+   ChatGPT Project through its visible controls before recording the binding below.
 2. Open the user's signed-in Chrome profile and navigate to the exact existing
    ChatGPT Project.
 3. Read the visible Project URL/ID, title, account, and workspace. Do not infer

@@ -23,11 +23,25 @@ const answer = id => ({
 });
 const location = {href: 'https://chatgpt.com/c/target'};
 let owner = 'owner-a';
+const modern = (test.messages || ['old-user','old-answer','target','answer']).map(id => {
+  const role = id.includes('answer') ? 'assistant' : 'user';
+  const body = {textContent: 'Answer', innerText: 'Answer', getAttribute: () => id};
+  const node = {
+    getAttribute: key => key === 'data-chatgpt-search-unit-key' ? 'fallback:0:' + role :
+      (test.conflicting_ids && role === 'assistant' ? id + ' other-id' : id + ' ' + id),
+    contains: () => false, querySelector: () => body, querySelectorAll: () => [body]
+  };
+  node.parentElement = {contains: other => other === node || !!test.cross_copy,
+    querySelectorAll: () => test.copy === false ? [] : [{disabled:false,getClientRects:()=>[1]}], parentElement:null};
+  return node;
+});
+if (test.duplicate_identity) modern.push(modern[modern.length - 1]);
 const scope = {
   Date: Clock, URL, location,
   sessionStorage: {getItem: () => owner},
   document: {
-    querySelectorAll: () => (test.messages || ['old-user', 'old-answer', 'target', 'answer'])
+    querySelectorAll: selector => test.modern ? (selector.includes('data-message-author-role') ? [] : modern) :
+      (test.messages || ['old-user', 'old-answer', 'target', 'answer'])
       .map(id => id.includes('answer') ? answer(id) : user(id)),
     querySelector: () => test.generating ? {} : null
   },
@@ -44,11 +58,25 @@ vm.runInContext(fs.readFileSync(process.argv[1], 'utf8'), scope);
 scope.waitForReply({attempt_id: 'attempt', remote_turn_id: 'target',
   conversation_url: location.href, tab_owner_token: owner,
   deadline: test.no_deadline ? null : new Date(start + (test.deadline_ms || 120000)).toISOString()
-}).then(result => process.stdout.write(JSON.stringify({result, sleeps, elapsed: now-start})));
+}).then(result => process.stdout.write(JSON.stringify({result, sleeps, elapsed: now-start})))
+  .catch(error => process.stdout.write(JSON.stringify({error: error.message})));
 """
 
 
 class WaitForReplyTests(unittest.TestCase):
+    def test_modern_message_ids_pin_reply_and_deduplicate_repeated_id_attribute(self):
+        out = self.run_wait(modern=True)
+        self.assertEqual(out['result']['status'], 'ready-for-capture')
+        self.assertEqual(out['result']['assistant_turn_id'], 'answer')
+
+    def test_modern_identity_ambiguity_is_not_guessed(self):
+        self.assertIn('Ambiguous', self.run_wait(modern=True, conflicting_ids=True)['error'])
+        self.assertIn('Duplicate', self.run_wait(modern=True, duplicate_identity=True)['error'])
+
+    def test_modern_copy_cannot_cross_into_another_answer(self):
+        out = self.run_wait(modern=True, cross_copy=True, deadline_ms=2000)
+        self.assertEqual(out['result']['status'], 'deadline')
+
     def run_wait(self, **kwargs):
         proc = subprocess.run(['node', '-e', HARNESS, str(SOURCE)],
                               input=json.dumps(kwargs), text=True, capture_output=True, timeout=10)

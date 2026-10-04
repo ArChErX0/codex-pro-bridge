@@ -10,6 +10,16 @@ from bridge_store import BridgeError
 MODEL_SELECTION_KINDS = ("exact", "latest-alias")
 MODEL_CONTROL_TRACE_V1 = "model-controls/v1"
 MODEL_CONTROL_TRACE_V2 = "model-controls/v2"
+LATEST_MODEL_ALIASES = frozenset(("最新", "Latest"))
+
+
+def model_selection_matches(requested: str, selected: str, kind: str) -> bool:
+    """Compare visible model labels without resolving a dynamic backend alias."""
+    requested = requested.strip()
+    selected = selected.strip()
+    if kind == "latest-alias":
+        return requested in LATEST_MODEL_ALIASES and selected in LATEST_MODEL_ALIASES
+    return kind == "exact" and requested == selected
 
 
 def assess_model_selection(requested: str, selected: str, kind: str) -> str:
@@ -18,7 +28,7 @@ def assess_model_selection(requested: str, selected: str, kind: str) -> str:
     selected = selected.strip()
     if not requested or not selected:
         return "unverified"
-    if requested != selected:
+    if not model_selection_matches(requested, selected, kind):
         return "mismatch"
     if kind == "latest-alias":
         return "alias-selected"
@@ -55,6 +65,9 @@ def validate_model_control_trace(trace: Mapping[str, Any]) -> dict[str, Any]:
     nested = schema == MODEL_CONTROL_TRACE_V2
     if nested and trace.get("control_layout") != "nested-slider":
         raise BridgeError("v2 requires the nested-slider control layout")
+    thinking_label_location = trace.get("thinking_label_location", "closed-trigger")
+    if nested and thinking_label_location not in ("closed-trigger", "outer-menu"):
+        raise BridgeError("nested thinking_label_location is invalid")
     page_id = _required_text(trace, "page_id")
     if not page_id.isdecimal() or int(page_id) <= 0:
         raise BridgeError("model-control page_id must be a positive integer")
@@ -130,6 +143,7 @@ def validate_model_control_trace(trace: Mapping[str, Any]) -> dict[str, Any]:
             raise BridgeError("each thinking adjustment requires one progress read")
     return {
         **({"control_layout": "nested-slider"} if nested else {}),
+        **({"thinking_label_location": thinking_label_location} if nested else {}),
         "schema_version": schema,
         "page_id": page_id,
         "tab_owner_token": owner,

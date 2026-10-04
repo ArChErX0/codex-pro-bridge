@@ -14,7 +14,15 @@ _PAGE_LINE_RE = re.compile(
     r"^\s*(?P<page_id>[0-9]+):\s+.+\((?P<url>[A-Za-z][A-Za-z0-9+.-]*:\S+)\)"
     r"(?:\s+\[selected\])?\s*$"
 )
+# Chrome MCP omits the title and parentheses when a page has no title.
+_UNTITLED_PAGE_LINE_RE = re.compile(
+    r"^\s*(?P<page_id>[0-9]+):\s+(?P<url>[A-Za-z][A-Za-z0-9+.-]*:\S+)"
+    r"(?:\s+\[selected\])?\s*$"
+)
 _JSON_FENCE_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
+_CLOSED_SELECTED_PAGE_NOTE_RE = re.compile(
+    r"Note: the previously selected page was closed\. Page (?P<page_id>[0-9]+) is now selected\."
+)
 
 
 def _aliased_value(item: Mapping[str, Any], aliases: tuple[str, ...], label: str) -> Any:
@@ -49,16 +57,26 @@ def _content_text(value: Mapping[str, Any], flag: str) -> str:
 def _parse_mcp_page_text(value: Mapping[str, Any], flag: str) -> list[Dict[str, Any]]:
     text = _content_text(value, flag)
     lines = [line for line in text.splitlines() if line.strip()]
+    selected_note = _CLOSED_SELECTED_PAGE_NOTE_RE.fullmatch(lines[0].strip()) if lines else None
+    if selected_note:
+        lines = lines[1:]
     if not lines or lines[0].strip() != "## Pages":
         raise BridgeError(f"{flag} MCP text must start with '## Pages'")
     result: list[Dict[str, Any]] = []
+    selected_ids: list[str] = []
     for line in lines[1:]:
-        match = _PAGE_LINE_RE.fullmatch(line)
+        match = _PAGE_LINE_RE.fullmatch(line) or _UNTITLED_PAGE_LINE_RE.fullmatch(line)
         if not match:
             raise BridgeError(f"{flag} contains an unrecognized MCP page line: {line!r}")
         result.append(
             {"page_id": match.group("page_id"), "url": match.group("url")}
         )
+        if line.rstrip().endswith("[selected]"):
+            selected_ids.append(match.group("page_id"))
+    # A known informational prefix is accepted only when the complete listing
+    # confirms its one selected page. It grants no tab ownership or navigation.
+    if selected_note and selected_ids != [selected_note.group("page_id")]:
+        raise BridgeError(f"{flag} closed-page note conflicts with selected page listing")
     return result
 
 

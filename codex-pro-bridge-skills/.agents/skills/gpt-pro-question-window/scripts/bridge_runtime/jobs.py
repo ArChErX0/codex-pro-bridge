@@ -10,10 +10,12 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 
 from bridge_store import BridgeError, atomic_write_text, file_lock, file_sha256, now_iso
 from executor_handoff import validate_handoff
 from prepare_review import read_request
+from collaboration_scope import SCOPE_FIELDS
 
 
 def read_json(path):
@@ -26,6 +28,8 @@ def write_json(path, value):
 
 def load_config(path):
     config = read_json(path)
+    if config.get("capture_route", "browser-fallback") not in ("browser-fallback", "browser-page-serialized"):
+        raise BridgeError("Unsupported runtime capture_route")
     if config.get("browser_transport", "stdio") not in ("stdio", "persistent"):
         raise BridgeError("browser_transport must be stdio or persistent")
     for key, default in (("browser_connect_timeout_seconds", 300), ("browser_tool_timeout_seconds", 90)):
@@ -49,6 +53,8 @@ def load_config(path):
     if ui.get("control_layout", "independent") not in ("independent", "nested-slider"):
         raise BridgeError("Unsupported model control layout")
     if ui.get("control_layout") == "nested-slider":
+        if ui.get("thinking_label_location", "closed-trigger") not in ("closed-trigger", "outer-menu"):
+            raise BridgeError("Unsupported nested thinking_label_location")
         for key in ("thinking_slider", "thinking_keyboard_control"):
             if not isinstance(ui.get(key), str) or not ui[key].strip() or "<" in ui[key]:
                 raise BridgeError(f"Nested UI profile requires an observed selector for {key}")
@@ -87,6 +93,9 @@ def validate_inputs(handoff_path, expected_hash, config):
             raise BridgeError(f"Handoff and request disagree on {field}")
     if request.get("bridge_project_id", "") != h.get("bridge_project_id", ""):
         raise BridgeError("Handoff and request disagree on Project")
+    for field in SCOPE_FIELDS:
+        if request.get(field, "") != h.get(field, ""):
+            raise BridgeError(f"Handoff and request disagree on {field}")
     if "file_digests" not in request:
         raise BridgeError("Execution requires frozen file_digests")
     if h.get("remote_project_id"):
@@ -134,6 +143,7 @@ class Jobs:
     def _spawn(self, directory):
         entry = Path(__file__).resolve().parents[1] / "bridge_mcp.py"
         env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+        env["CODEX_BRIDGE_CONTINUATION_REQUEST_ID"] = read_json(directory / "job.json").get("continuation", {}).get("request_id", "")
         options = {"start_new_session": True} if os.name != "nt" else {
             "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS}
         with (directory / "worker.log").open("ab") as log:
@@ -141,23 +151,52 @@ class Jobs:
                                        stdin=subprocess.DEVNULL, stdout=log, stderr=log, env=env, **options)
         # Reap children while this MCP lives; detachment keeps workers alive on EOF.
         threading.Thread(target=process.wait, daemon=True).start()
+        return process.pid
 
     def status(self, job_id):
         directory = self.directory(job_id)
         job = read_json(directory / "job.json")
         result = {key: job[key] for key in (
             "job_id", "state", "stage", "bridge_thread_id", "updated_at", "may_resend")}
-        for key in ("attempt_id", "conversation_url", "remote_turn_id", "error", "result", "timings", "browser_phase"):
+        for key in ("attempt_id", "conversation_url", "remote_turn_id", "error", "result", "timings", "browser_phase", "browser_tool_metrics"):
             if key in job:
                 result[key] = job[key]
+        if isinstance(job.get("continuation"), dict):
+            result["continuation"] = job["continuation"]
+        # Read-only reconciliation: an envelope is not the send/capture authority.
+        # Never spawn a worker or rewrite history merely to report a saved answer.
+        if job.get("attempt_id") or job["state"] == "complete":
+            from bridge_attempts import read_attempt
+            from .completion import validated_completion
+            try:
+                attempt = read_attempt(Path(job["repo"]), job["bridge_thread_id"], job["attempt_id"])
+                if attempt["state"] == "captured" or job["state"] == "complete":
+                    receipt = validated_completion(job)
+                    result.update(state="complete", stage="captured", error="", result=receipt,
+                                  conversation_url=receipt["conversation_url"], remote_turn_id=receipt["remote_turn_id"])
+                    if job["state"] != "complete":
+                        result["reconciled_from"] = "canonical-captured-attempt"
+            except (BridgeError, OSError, KeyError, ValueError) as exc:
+                result.pop("result", None)
+                result.update(state="blocked", may_resend=False, completion_validation_error=str(exc),
+                              error=f"Captured-state verification failed: {exc}")
         heartbeat = directory / "heartbeat"
         try:
             result["worker_recently_alive"] = time.time() - heartbeat.stat().st_mtime < 90
         except FileNotFoundError:
             result["worker_recently_alive"] = False
-        result["next_action"] = ("result" if job["state"] == "complete" else
-                                 "inspect-blocker" if job["state"] == "blocked" else
+        result["next_action"] = ("result" if result["state"] == "complete" else
+                                 "inspect-blocker" if result["state"] == "blocked" else
                                  "wait" if result["worker_recently_alive"] else "resume")
+        pending = job.get("continuation", {})
+        if (result["state"] != "complete" and not result.get("completion_validation_error")
+                and pending.get("status") == "accepted" and pending.get("process_start")
+                and process_alive(pending.get("pid")) and process_start(pending["pid"]) == pending["process_start"]):
+            result.update(state="running", error="", next_action="wait", continuation={**pending,"status":"pending"})
+        if (result["state"] in {"running","waiting"} and pending.get("status") == "started"
+                and pending.get("process_start") and process_alive(pending.get("pid"))
+                and process_start(pending["pid"]) == pending["process_start"]):
+            result["next_action"] = "wait"
         return result
 
     def wait(self, job_id, seconds=30):
@@ -171,22 +210,56 @@ class Jobs:
             time.sleep(min(0.5, max(0, deadline - time.monotonic())))
 
     def resume(self, job_id):
-        result = self.status(job_id)
-        if result["state"] == "complete":
+        directory = self.directory(job_id)
+        with file_lock(directory / ".resume.lock"):
+            result = self.status(job_id)
+            if result["state"] == "complete" or result.get("completion_validation_error"):
+                return result
+            with worker_lock(directory) as available:
+                if not available:
+                    return {**result, "next_action": "wait", "continuation": {
+                        "status": "already-running", "accepted": True, "job_id": job_id}}
+            job = Job(directory)
+            prior = job.data.get("continuation", {})
+            # An accepted child may not have reached worker_lock yet. Observe
+            # that same PID, rather than creating a second child while it boots.
+            if prior.get("status") == "accepted" and process_alive(prior.get("pid")):
+                current_start = process_start(prior["pid"])
+                if not prior.get("process_start") or not current_start:
+                    return {**result, "next_action": "inspect-blocker", "continuation": {
+                        **prior, "status": "startup-identity-unverified"}}
+                if current_start == prior["process_start"]:
+                    return {**result, "next_action": "wait", "continuation": {**prior, "status": "pending"}}
+            token = uuid.uuid4().hex
+            receipt = {"request_id": token, "job_id": job_id, "status": "accepted",
+                       "accepted": True, "requested_at": now_iso()}
+            job.update(continuation=receipt)
+            try:
+                pid = self._spawn(directory)
+            except Exception as exc:
+                update_accepted_continuation(directory, token, status="spawn-failed", error=str(exc))
+                return {**self.status(job_id), "next_action": "inspect-blocker"}
+            # Merge, never overwrite a worker acknowledgement racing spawn.
+            update_accepted_continuation(directory, token, pid=pid, process_start=process_start(pid))
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                current = read_json(job.path).get("continuation", {})
+                if current.get("request_id") == token and current.get("status") != "accepted":
+                    break
+                if pid is not None and not process_alive(pid):
+                    update_accepted_continuation(directory, token, pid=pid, status="worker-exited-before-start")
+                    break
+                time.sleep(0.02)
+            result = self.status(job_id)
+            current = result.get("continuation", receipt)
+            if current.get("status") == "accepted":
+                result["continuation"] = {**current, "status": "pending"}
+            if current.get("status") in {"accepted", "started"} and result["state"] in {"queued", "running", "waiting"}:
+                result["next_action"] = "wait"
             return result
-        if not result["worker_recently_alive"]:
-            self._spawn(self.directory(job_id))
-        return self.status(job_id)
 
     def result(self, job_id):
-        result = self.status(job_id)
-        if result["state"] != "complete":
-            return result
-        receipt = result["result"]
-        for path_key, hash_key in (("answer_path", "answer_sha256"), ("turn_path", "turn_sha256")):
-            if file_sha256(Path(receipt[path_key])) != receipt[hash_key]:
-                raise BridgeError("Saved result digest drift")
-        return result
+        return self.status(job_id)
 
 
 @contextlib.contextmanager
@@ -232,8 +305,76 @@ class Job:
         self.data = read_json(self.path)
 
     def update(self, **fields):
-        self.data.update(fields, updated_at=now_iso())
-        write_json(self.path, self.data)
+        with file_lock(self.directory / ".job.lock"):
+            current = read_json(self.path)
+            current.update(fields, updated_at=now_iso())
+            write_json(self.path, current)
+            self.data = current
+
+
+def process_alive(pid):
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE,ctypes.POINTER(wintypes.DWORD)]
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return ctypes.get_last_error() == 5
+        try:
+            code = wintypes.DWORD()
+            return bool(kernel.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259
+        finally:
+            kernel.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def process_start(pid):
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return None
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.GetProcessTimes.argtypes = [wintypes.HANDLE,*([ctypes.POINTER(wintypes.FILETIME)]*4)]
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return None
+        try:
+            values = [wintypes.FILETIME() for _ in range(4)]
+            if not kernel.GetProcessTimes(handle, *(ctypes.byref(v) for v in values)):
+                return None
+            return str((values[0].dwHighDateTime << 32) | values[0].dwLowDateTime)
+        finally:
+            kernel.CloseHandle(handle)
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()[19]
+    except (OSError, IndexError):
+        return None
+
+
+def update_accepted_continuation(directory, token, **fields):
+    with file_lock(directory / ".job.lock"):
+        path = directory / "job.json"
+        current = read_json(path)
+        continuation = current.get("continuation", {})
+        if continuation.get("request_id") == token and continuation.get("status") == "accepted":
+            current.update(continuation={**continuation, **fields}, updated_at=now_iso())
+            write_json(path, current)
 
 
 def run_worker(directory):
@@ -243,8 +384,17 @@ def run_worker(directory):
         if not acquired:
             return
         job = Job(directory)
+        continuation = job.data.get("continuation")
+        launch_token = os.environ.get("CODEX_BRIDGE_CONTINUATION_REQUEST_ID", "")
+        if isinstance(continuation, dict) and launch_token != continuation.get("request_id"):
+            return  # A delayed old child cannot acknowledge a newer resume.
         if job.data["state"] == "complete":
             return
+        if isinstance(continuation, dict) and continuation.get("status") == "accepted":
+            checkpoint = {"request_id":launch_token,"state":job.data["state"],"error":job.data.get("error","")}
+            job.update(continuation={**continuation, "status": "started", "pid": os.getpid(),
+                                     "process_start":process_start(os.getpid()),
+                                     "started_at": now_iso()}, state="running",error="",resume_checkpoint=checkpoint)
         stop = threading.Event()
         def pulse():
             while not stop.is_set():

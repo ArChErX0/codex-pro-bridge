@@ -1,6 +1,6 @@
 ---
 name: gpt-pro-question-window
-description: Route a frozen Codex Pro question through the correct signed-in ChatGPT/GPT Pro conversation, using the specialized bridge_executor for bundle preparation, browser submission, unattended waiting, and raw capture; retain local verification in the main agent.
+description: Route authorized Codex Pro questions to the correct root-scoped Project and owner conversation, using the persistent Bridge MCP or its agent fallback for execution and raw capture; retain local verification in the requesting agent.
 ---
 
 # GPT Pro Question Window
@@ -17,19 +17,22 @@ consistent throughout one Bridge round instead of relying on script shebangs.
 
 ## Canonical contracts
 
-Before creating or resuming Bridge state, read
-[bridge_protocol.md](references/bridge_protocol.md). Before an external browser round,
-read [browser_adapters.md](references/browser_adapters.md) and
-[attempt_recovery.md](references/attempt_recovery.md). When delegating the mechanical
-round, read [executor_handoff.md](references/executor_handoff.md) completely and pass
-its structured handoff to the global `bridge_executor` Agent.
+按实际执行路线读取说明，不把手工浏览器流程再跑在持久 worker 外面：
 
-The referenced documents and existing Python helpers are the sole owners of owner
-tokens, exact URLs, page observations, attempts, preflight, browser actions, capture,
-cleanup, and append-only ledger semantics. Do not copy those algorithms into this
-skill or into a custom prompt.
+- 普通 MCP 调用：读取下述根线程规则和 [mcp_runtime.md](references/mcp_runtime.md)。
+- 委派 Agent 后备执行：完整读取 [executor_handoff.md](references/executor_handoff.md)，
+  把冻结 handoff 交给 `bridge_executor`；该角色按合同读取其执行参考。
+- 直接操作浏览器或诊断 UI：读取 [browser_adapters.md](references/browser_adapters.md)；
+  中断恢复另读 [attempt_recovery.md](references/attempt_recovery.md)。
+- 直接维护状态、账本、快照或排查身份合同：读取 [bridge_protocol.md](references/bridge_protocol.md)。
+
+参考文档和现有 helper 是身份、预检、attempt、回收及账本的权威实现；不在提示词中重写算法。
 
 ## Main-agent responsibilities
+
+在 Codex 主代理/组长协作中，仅在用户明确启用的任务范围内咨询。准备前读取
+[根线程与负责人绑定](references/codex_scope.md)，显式携带根线程及负责人身份；
+不要用仓库默认绑定或任务标题代替会话归属。
 
 当当前环境已配置并验收 `codex-pro-bridge` 执行 MCP 时，优先使用
 [mcp_runtime.md](references/mcp_runtime.md) 的 `bridge_submit → bridge_wait → bridge_result`。
@@ -38,7 +41,9 @@ skill or into a custom prompt.
 不能因等待超时或阻塞切换另一条路线重发。
 
 1. Define the exact question, desired output, and whether external reasoning is useful.
-   Use `resolve_bridge_route.py` with `--external-reasoning` or `--local-only`. A
+   For Codex-scoped collaboration, follow the root/owner entry above; an unscoped
+   route preview is not its Project decision. Legacy callers may use
+   `resolve_bridge_route.py` with `--external-reasoning` or `--local-only`. A
    `local_only` result ends this route without spawning an Executor.
 2. Freeze the evidence decision and any explicit target Project URL. For a new round,
    run `scripts/prepare_bridge_execution.py` with the question file, notes, frozen
@@ -56,15 +61,11 @@ skill or into a custom prompt.
    contains the frozen goal/question/notes/files; model controls and Project target
    live in v2 handoff. A business deadline may be supplied only when the parent/user
    explicitly defines one; otherwise omit it or set it to null.
-4. Select exactly one execution mode and invoke the named `bridge_executor` Agent:
-   `prepare-and-run` for the published v2 handoff with explicit one-Send authorization,
-   or `recover-only` for an existing unresolved attempt. Do not split packaging and
-   browser ownership across agents.
-5. Keep the same Executor handle and use `wait_agent` for its completion, blocked,
-   failed, or continuation receipt. A wait timeout, unchanged page, or child runtime
-   limit is not task completion and does not authorize a new Agent, attempt, upload, or
-   Send. Continue the same handoff in `recover-only` as directed by its receipt. A
-   missing/null business deadline means there is no business termination time.
+4. 只选一条路线：已验收 MCP 用 `bridge_submit`；Agent 后备用 `bridge_executor` 的
+   `prepare-and-run`，恢复既有 attempt 用 `recover-only`。不能同时交给两条路线。
+5. MCP 用同一 job 的 `bridge_wait/status/result`，必要时 `bridge_resume`；Agent 用同一
+   handle 的 `wait_agent` 和恢复回执。等待窗口结束、页面未变化或子代理执行期限不等于
+   任务完成，也不授权新建 attempt、重传或重发。未指定 business deadline 就没有业务截止时间。
 6. After a `complete` receipt, reopen the immutable answer, bundle, ledger, and
    checkpoint; verify hashes and the exact pinned turn. Record the separate Codex
    verdict with `record_codex_verdict.py`, then run the thread/Project verifiers before
@@ -72,40 +73,18 @@ skill or into a custom prompt.
 
 ## Executor boundary
 
-The Executor owns the mechanical round inside the frozen contract: request validation,
-bundle creation, manifest/ZIP checks, WSL/Windows staging and digest verification when
-an attachment is authorized, browser identity resolution, explicit target Project
-verification and complete Sources inventory observation, scoped upload, fresh preflight,
-one authorized Send, bootstrap promotion, exact-file cleanup, pinned-turn waiting, raw
-answer persistence, and release. On the Chrome DevTools route, the upload action is
-strictly one click on Add files, a fresh same-page snapshot, then direct `upload_file`
-on the fresh Upload from computer UID; never click that menu item or click Add files
-again after a missing chip. Use `scripts/validate_devtools_upload.py` to check the
-structured action plan, persist it under the handoff's expected output directory,
-normalize and persist its successful upload receipt, and pass both to browser preflight;
-a missing, failed, unknown, or stale receipt blocks before Send. Stop on its native chooser risk result. For
-`context_policy = none`, it passes
-`--repo-context none --max-files 0`, does not stage or upload a nonexistent/unauthorized
-attachment, does not create a bundle, and still may perform the authorized Send and
-capture. It must use the existing helpers and fail closed on identity, digest,
-authorization, or turn ambiguity.
+执行者负责冻结合同内的打包、暂存、上传、一次 Send、固定 turn 等待、原文保存及清理；
+父代理不重复这些机械步骤。Project 首次核验和 Sources 修复按 Project skill，不能从空清单
+推断已核验。`context_policy=none` 不打包或上传，但仍执行授权问题和回收。
 
-For browser model controls, require one `model-controls/v1` transaction: one combined
-initial read, only mismatch-driven adjustments, and one combined final confirmation.
-Pass its receipt to preflight and never recheck controls after preflight or during
-recovery. A recovery owner/URL HOLD is an observation conflict, not proof of navigation;
-the Executor must not navigate or reload to repair it and may describe a transition only
-from direct same-page URL observations.
+模型控件按已观察布局使用 v1（独立菜单）或 v2（嵌套菜单/滑块），仅不匹配时调整，
+把回执交给预检；不在预检后重复确认，也不在恢复时重放。上传顺序和 chooser 风险仅按
+browser adapter 合同执行，不能混用不同后备路线。DevTools 对新快照中的
+`Upload from computer` 控件直接调用 `upload_file`，不点击该项打开 native chooser。
+身份 HOLD 不授权导航、重载或换会话。
 
-The connector fallback's `waitForEvent("filechooser")` plus menu-item click is a
-different route and must only be used after a qualifying pre-Send DevTools failure
-before any upload action/chooser; never mix it into the DevTools upload sequence.
-
-The main agent retains the purpose, evidence scope, question text, Project decision,
-external-action authorization, interpretation of any error, scientific/engineering
-verification, and final verdict. The Executor must not choose materials, rewrite the
-question, adopt or summarize the answer, or put long answer text in its inter-agent
-receipt; it returns paths, hashes, identities, status, and concrete blockers only.
+父代理保留目标、材料范围、问题、Project 决策、外部动作授权及最终核验；执行者不能
+自行选材料、改问题或采纳答案，只返回路径、摘要、身份、状态和具体阻断，不转述长回答。
 
 ## Completion and failure semantics
 

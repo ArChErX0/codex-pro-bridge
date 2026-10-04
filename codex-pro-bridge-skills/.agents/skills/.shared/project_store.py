@@ -2,8 +2,9 @@
 """Project-aware persistence for Codex Pro Bridge.
 
 Bridge Thread ledgers remain the canonical history for individual tasks. This
-module owns the smaller project-level model: one local project, at most one
-ChatGPT Project binding, shared source state, and task membership.
+module owns the smaller project-level model: one Bridge Project per Codex root
+thread (plus one optional legacy project), each with its own ChatGPT Project
+binding, shared source state, and task membership.
 """
 
 from __future__ import annotations
@@ -135,6 +136,13 @@ def remote_project_id_from_url(value: str, explicit_id: str = "") -> str:
     )
 
 
+def validate_owner_agent_id(value: str) -> str:
+    if (not isinstance(value, str) or not value or value != value.strip()
+            or len(value) > 256 or any(ord(c) < 32 or ord(c) == 127 for c in value)):
+        raise BridgeError("owner agent id must be a nonempty string without control characters")
+    return value
+
+
 class BridgeProjectStore:
     """Deep module for project identity, binding, tasks, and project audit state."""
 
@@ -169,6 +177,34 @@ class BridgeProjectStore:
             if path.is_file()
         )
 
+    def legacy_project_ids(self) -> List[str]:
+        return [
+            project_id
+            for project_id in self.list_project_ids()
+            if not _read_json(
+                self.project_dir(project_id) / "project.json", default={}
+            ).get("codex_root_thread_id")
+        ]
+
+    def root_project_id(self, codex_root_thread_id: str) -> str:
+        codex_root_thread_id = validate_id(
+            codex_root_thread_id, "Codex root thread id"
+        )
+        matches = [
+            project_id
+            for project_id in self.list_project_ids()
+            if _read_json(
+                self.project_dir(project_id) / "project.json", default={}
+            ).get("codex_root_thread_id")
+            == codex_root_thread_id
+        ]
+        if len(matches) > 1:
+            raise BridgeError(
+                f"Codex root thread {codex_root_thread_id} has multiple Bridge Projects: "
+                f"{matches}"
+            )
+        return matches[0] if matches else ""
+
     def resolve_project_id(self, project_id: str = "") -> str:
         if project_id:
             project_id = validate_id(project_id, "bridge project id")
@@ -178,11 +214,17 @@ class BridgeProjectStore:
         project_ids = self.list_project_ids()
         if not project_ids:
             raise BridgeError("This repository has no Bridge Project")
-        if len(project_ids) > 1:
+        legacy_ids = self.legacy_project_ids()
+        if not legacy_ids:
             raise BridgeError(
-                "This repository has multiple Bridge Projects; specify --bridge-project-id"
+                "This repository has no legacy Bridge Project; specify --bridge-project-id"
             )
-        return project_ids[0]
+        if len(legacy_ids) > 1:
+            raise BridgeError(
+                "This repository has multiple legacy Bridge Projects; "
+                "specify --bridge-project-id"
+            )
+        return legacy_ids[0]
 
     def create_project(
         self,
@@ -190,6 +232,7 @@ class BridgeProjectStore:
         *,
         title: str = "",
         brief_path: str = "",
+        codex_root_thread_id: str = "",
     ) -> Dict[str, Any]:
         self.projects_dir.mkdir(parents=True, exist_ok=True)
         with file_lock(self.projects_dir / ".projects.lock"):
@@ -197,6 +240,7 @@ class BridgeProjectStore:
                 project_id,
                 title=title,
                 brief_path=brief_path,
+                codex_root_thread_id=codex_root_thread_id,
             )
 
     def _create_project_unlocked(
@@ -205,19 +249,40 @@ class BridgeProjectStore:
         *,
         title: str = "",
         brief_path: str = "",
+        codex_root_thread_id: str = "",
     ) -> Dict[str, Any]:
         project_id = validate_id(project_id, "bridge project id")
-        existing_ids = self.list_project_ids()
-        if existing_ids and project_id not in existing_ids:
-            raise BridgeError(
-                f"Local project {self.repo} is already represented by {existing_ids[0]}"
+        if codex_root_thread_id:
+            codex_root_thread_id = validate_id(
+                codex_root_thread_id, "Codex root thread id"
             )
+        existing_ids = self.list_project_ids()
         directory = self.project_dir(project_id)
         project_path = directory / "project.json"
         existing = _read_json(project_path, default={})
         if existing:
             self._validate_project(existing, expected_id=project_id)
+            existing_root = str(existing.get("codex_root_thread_id", ""))
+            if existing_root != codex_root_thread_id:
+                raise BridgeError(
+                    f"Bridge Project {project_id} is already scoped to "
+                    f"{existing_root or 'legacy'}"
+                )
             return existing
+
+        for existing_id in existing_ids:
+            existing_project = _read_json(
+                self.project_dir(existing_id) / "project.json", default={}
+            )
+            self._validate_project(existing_project, expected_id=existing_id)
+            existing_root = str(existing_project.get("codex_root_thread_id", ""))
+            if existing_root == codex_root_thread_id:
+                scope = (
+                    f"Codex root thread {codex_root_thread_id}"
+                    if codex_root_thread_id
+                    else "legacy repository scope"
+                )
+                raise BridgeError(f"{scope} is already represented by {existing_id}")
 
         directory.mkdir(parents=True, exist_ok=True)
         if brief_path:
@@ -258,15 +323,20 @@ class BridgeProjectStore:
             "created_at": created_at,
             "updated_at": created_at,
         }
+        if codex_root_thread_id:
+            project["codex_root_thread_id"] = codex_root_thread_id
         _write_json(project_path, project)
+        activity_data = {
+            "title": project["title"],
+            "local_root": project["local_root"],
+            "brief_path": project["brief_path"],
+        }
+        if codex_root_thread_id:
+            activity_data["codex_root_thread_id"] = codex_root_thread_id
         self.append_activity(
             project_id,
             "project-created",
-            {
-                "title": project["title"],
-                "local_root": project["local_root"],
-                "brief_path": project["brief_path"],
-            },
+            activity_data,
             dedupe_key=f"project-created:{project_id}",
         )
         self._write_index()
@@ -388,6 +458,7 @@ class BridgeProjectStore:
         max_project_files: int = 0,
         verified: bool = False,
         allow_rebind: bool = False,
+        allow_shared_remote: bool = False,
     ) -> Dict[str, Any]:
         project_id = self.resolve_project_id(project_id)
         with file_lock(self.project_dir(project_id) / ".binding.lock"):
@@ -402,6 +473,7 @@ class BridgeProjectStore:
                 max_project_files=max_project_files,
                 verified=verified,
                 allow_rebind=allow_rebind,
+                allow_shared_remote=allow_shared_remote,
             )
 
     def _bind_remote_unlocked(
@@ -417,12 +489,18 @@ class BridgeProjectStore:
         max_project_files: int = 0,
         verified: bool = False,
         allow_rebind: bool = False,
+        allow_shared_remote: bool = False,
     ) -> Dict[str, Any]:
         project = self.load_project(project_id)
         project_id = project["bridge_project_id"]
         if project["status"] != "active":
             raise BridgeError(
                 f"Bridge Project {project_id} is archived; reactivate it before binding"
+            )
+        if allow_shared_remote and not project.get("codex_root_thread_id"):
+            raise BridgeError(
+                "Shared ChatGPT Project binding requires a Codex root-scoped "
+                "Bridge Project"
             )
         if sync_mode not in SYNC_MODES:
             raise BridgeError(f"sync mode must be one of: {', '.join(sorted(SYNC_MODES))}")
@@ -442,6 +520,7 @@ class BridgeProjectStore:
             if (
                 other.get("status") != "unbound"
                 and other.get("remote_project_id") == remote_project_id
+                and not allow_shared_remote
             ):
                 raise BridgeError(
                     f"ChatGPT Project {remote_project_id} is already bound to {other_id}"
@@ -920,18 +999,18 @@ class BridgeProjectStore:
             data = event.get("data") if isinstance(event.get("data"), Mapping) else {}
             thread_id = str(data.get("bridge_thread_id", ""))
             if event.get("event_type") == "task-attached" and thread_id:
-                tasks.setdefault(
-                    thread_id,
-                    {
-                        "bridge_thread_id": thread_id,
-                        "title": str(data.get("title", "")) or thread_id,
-                        "goal": str(data.get("goal", "")),
-                        "status": str(data.get("status", "")) or "active",
-                        "depends_on": list(data.get("depends_on", [])),
-                        "attached_at": event.get("occurred_at", ""),
-                        "updated_at": event.get("occurred_at", ""),
-                    },
-                )
+                task = {
+                    "bridge_thread_id": thread_id,
+                    "title": str(data.get("title", "")) or thread_id,
+                    "goal": str(data.get("goal", "")),
+                    "status": str(data.get("status", "")) or "active",
+                    "depends_on": list(data.get("depends_on", [])),
+                    "attached_at": event.get("occurred_at", ""),
+                    "updated_at": event.get("occurred_at", ""),
+                }
+                if data.get("owner_agent_id"):
+                    task["owner_agent_id"] = str(data["owner_agent_id"])
+                tasks.setdefault(thread_id, task)
             elif event.get("event_type") == "task-updated" and thread_id in tasks:
                 for key in ("title", "goal", "depends_on"):
                     if key in data:
@@ -955,6 +1034,7 @@ class BridgeProjectStore:
         goal: str = "",
         status: str = "active",
         depends_on: Sequence[str] = (),
+        owner_agent_id: str = "",
     ) -> Dict[str, Any]:
         project_id = self.resolve_project_id(project_id)
         project = self.load_project(project_id)
@@ -963,6 +1043,8 @@ class BridgeProjectStore:
                 f"Bridge Project {project_id} is archived; reactivate it before attaching tasks"
             )
         thread_id = validate_id(thread_id, "bridge thread id")
+        if owner_agent_id:
+            validate_owner_agent_id(owner_agent_id)
         if status not in TASK_STATUSES:
             raise BridgeError(f"task status must be one of: {', '.join(sorted(TASK_STATUSES))}")
         dependencies = [validate_id(item, "dependency thread id") for item in depends_on]
@@ -971,6 +1053,11 @@ class BridgeProjectStore:
 
         existing = self.task_states(project_id).get(thread_id)
         if existing:
+            if owner_agent_id and existing.get("owner_agent_id", "") != owner_agent_id:
+                raise BridgeError(
+                    f"Bridge Thread {thread_id} is already attached to owner "
+                    f"{existing.get('owner_agent_id', '') or 'legacy-unscoped'}"
+                )
             return existing
         current_tasks = self.task_states(project_id)
         missing_dependencies = [
@@ -991,16 +1078,19 @@ class BridgeProjectStore:
             raise BridgeError(
                 f"Bridge Thread {thread_id} already belongs to {sorted(event_projects)}"
             )
+        activity_data = {
+            "bridge_thread_id": thread_id,
+            "title": _one_line(title or thread_id, 160),
+            "goal": _one_line(goal, 500),
+            "status": status,
+            "depends_on": dependencies,
+        }
+        if owner_agent_id:
+            activity_data["owner_agent_id"] = owner_agent_id
         self.append_activity(
             project_id,
             "task-attached",
-            {
-                "bridge_thread_id": thread_id,
-                "title": _one_line(title or thread_id, 160),
-                "goal": _one_line(goal, 500),
-                "status": status,
-                "depends_on": dependencies,
-            },
+            activity_data,
             dedupe_key=f"task-attached:{thread_id}",
         )
         return self.task_states(project_id)[thread_id]
@@ -1348,6 +1438,9 @@ class BridgeProjectStore:
             )
         if project.get("status") not in {"active", "archived"}:
             raise BridgeError(f"Invalid Bridge Project status for {expected_id}")
+        codex_root_thread_id = str(project.get("codex_root_thread_id", ""))
+        if codex_root_thread_id:
+            validate_id(codex_root_thread_id, "Codex root thread id")
 
     def _validate_binding(
         self, binding: Mapping[str, Any], *, expected_project_id: str

@@ -38,7 +38,7 @@ SSH access to an execution host is not browser access. Never expose a Chrome deb
 Treat MCP configuration as discoverability, not connection proof. Acquire a conversation claim for an existing chat, or a one-time Project/profile bootstrap claim for a new chat, then:
 
 1. Let the user approve Chrome's remote-debugging prompt when required. One multi-step validation sequence must reuse the same MCP process and owned tab; restarting MCP between assertions repeatedly triggers this permission and invalidates page/snapshot IDs. Stop for login, account security, CAPTCHA, or unexpected profile selection.
-2. Call `list_pages` and pass the complete result, including non-ChatGPT pages, to `manage_browser_lease.py resolve-tab`; the model does not prefilter pages or calculate matching counts. Only `open-canonical-tab` permits `new_page`, using exactly its `canonical_url`. Existing conversation claims never open Project/home or another tab. 唯一匹配 owner 优先；没有 owner 的重复 Project 首页自动选择可用且 pageId 最小的页面，其他页不操作，不要求用户关闭。已绑定 owner 缺失、同一 owner 多页或 owner/身份不符仍 HOLD。Never call `close_page`.
+2. Call `list_pages` and pass the complete result, including non-ChatGPT pages, to `manage_browser_lease.py resolve-tab`; the model does not prefilter pages or calculate matching counts. Only `open-canonical-tab` permits `new_page`, using exactly its `canonical_url`. Existing conversation claims never open Project/home or another tab. 唯一匹配 owner 优先；没有 owner 的重复 Project 首页自动选择可用且 pageId 最小的页面，其他页不操作，不要求用户关闭。已绑定 owner 缺失、同一 owner 多页或 owner/身份不符仍 HOLD。For an unbound Project bootstrap claim, the resolver may preserve an unowned same-Project `/project?tab=sources` page and return `open-canonical-tab` only after a complete fresh owner observation proves that every such noncanonical home has the exact `tab=sources` query, no fragment or extra query, and an empty owner; it never takes over, navigates, or closes those pages. Any other noncanonical URL or owner state remains HOLD. Never call `close_page`.
 3. If resolution returns `read-owners-on`, read `sessionStorage['codex-pro-bridge.tab-owner.v1']` only on those current-process pageIds and rerun with those observations. Follow only the returned action. After `set-owner-token`, `replace-stale-owner-token`, or `replace-legacy-owner-token`, read the value back and rerun resolution; `tab_bound` becomes true only after the claim owner is actually observed. The legacy action only consolidates an exact conversation page from an older aliased-profile token to that conversation's newest durable token; two observed compatible owners HOLD as a duplicate. A bootstrap owner on a same-Project `/c/<id>` is `promote-ready`; any other owner/URL mismatch HOLDs. Never use `localStorage`.
 4. Stage the Task Bundle with `manage_browser_staging.py`; compare source and staged SHA-256 and use only its returned browser-host path (`staged_browser_path`, also exposed as the compatibility field `staged_windows_path`).
 5. Take a fresh snapshot of that page and locate ChatGPT's visible **Add files** (or equivalent attachment) control. Click that attachment control exactly once to open the menu. Do not click the menu item that says **Upload from computer** on the DevTools route.
@@ -64,6 +64,9 @@ The MCP may see every open window in the connected Chrome profile. Page visibili
 
 - `--pages-json` 可直接传完整 `list_pages` MCP 返回对象，也接受页面数组；页面 ID 字段支持
   `page_id`、`pageId`、`id`。别名同时存在但值冲突时失败，不丢弃非 ChatGPT 页来凑数量。
+  `## Pages` 前仅额外接受当前 MCP 的精确提示 `Note: the previously selected page was closed.
+  Page <id> is now selected.`（实际为同一行），并要求完整列表恰好一条 `[selected]` 与该 ID
+  一致。未知、重复提示及选中页冲突仍拒绝；此提示不构成 tab ownership 或导航授权。
 - `--owners-json` 为逐页数组，可用 `page_id`＋`owner_token`；也可保留原结果，形如
   `{"pageId": 1, "observation": <该页 evaluate_script 的完整 MCP 返回对象>}`。
   读取脚本应返回实际 `url` 和 `owner`；owner 字段支持 `owner_token`、`tab_owner_token`、`owner`，
@@ -101,6 +104,13 @@ completed assistant turn:
    without routing the full answer through model context.
 4. Save that file with `save_bridge_turn.py`, passing `--answer-file <fresh.md>`
    and `--answer-format copied-markdown`.
+
+持久 worker 使用更强的 `visible-copy-write/v1`：锁内精确聚焦目标页，点击固定消息的可见
+Copy 控件，仅观察这次操作实际调用的浏览器 Clipboard 写入接口。原写入照常执行，临时观察器
+在成功、失败或超时后均恢复；不读 ChatGPT 内部状态或网络接口。要求唯一成功写入、前后
+owner/URL/消息内容不变，再将原始 Markdown 直接保存到文件，不经过模型改写。相同文本再次
+复制也可确认，不依赖系统剪贴板“发生变化”；其他应用的剪贴板写入不作为本轮答案。
+接口不可观察、重复写入、失焦或消息变化均失败，不回退为仅按结构数量接受文本。
 
 Keep `innerText` only for completion, first/last-text, and truncation checks. If
 Copy reply is unavailable, record `plain-text-degraded`; do not describe it as

@@ -70,6 +70,12 @@ deterministic parent entry point is `scripts/prepare_bridge_execution.py`; the p
 must pass its published handoff and must not hand-write a Thread ID or a second
 model-control copy in the request.
 
+Codex-scoped rounds carry `codex_root_thread_id` and `owner_agent_id` in both
+request and handoff. The Project owns the root identity; its task attachment owns
+the agent identity. Preparation and execution verify that chain. Scoped rounds
+use a per-round preparation directory inside the same Thread; identical inputs
+reuse the receipt. See [Codex scope](codex_scope.md).
+
 The v2 `prepare-and-run` handoff requires and freezes `context_policy` (`auto`,
 `explicit`, or `none`), its `max_files` limit, and the derived `attachment_policy`
 (`bundle` or `none`). `explicit`

@@ -1378,6 +1378,94 @@ class BrowserBootstrapTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("disagrees", result.stderr)
 
+    def test_bootstrap_opens_canonical_tab_while_preserving_unowned_sources_home(self) -> None:
+        claim = acquire_browser_lease(
+            self.repo,
+            holder="bootstrap-sources",
+            thread_id="bootstrap-sources-thread",
+            expected_remote_project_id="g-p-demo",
+            scope="project",
+            bootstrap=True,
+        )
+        pages = [
+            {"page_id": 41, "url": "https://chatgpt.com/g/g-p-demo/project?tab=sources"},
+            {"page_id": 42, "url": "https://grok.com/c/unrelated"},
+        ]
+        resolved = resolve_owned_tab(
+            self.repo,
+            claim_token=claim["token"],
+            thread_id="bootstrap-sources-thread",
+            browser_profile=claim["browser_profile"],
+            expected_project_id="g-p-demo",
+            pages=pages,
+            owners=[{"page_id": 41, "owner_token": ""}],
+        )
+        self.assertEqual(resolved["action"], "open-canonical-tab")
+        self.assertEqual(resolved["reason"], "unowned-sources-home-preserved")
+        self.assertEqual(
+            resolved["canonical_url"], "https://chatgpt.com/g/g-p-demo/project"
+        )
+        self.assertEqual(resolved["preserved_page_ids"], ["41"])
+        self.assertFalse(resolved["tab_bound"])
+
+    def test_bootstrap_sources_exception_keeps_noncanonical_safety_holds(self) -> None:
+        cases = (
+            (
+                "extra-query",
+                "https://chatgpt.com/g/g-p-demo/project?tab=sources&x=1",
+                "",
+            ),
+            (
+                "fragment",
+                "https://chatgpt.com/g/g-p-demo/project?tab=sources#top",
+                "",
+            ),
+            (
+                "other-path",
+                "https://chatgpt.com/g/g-p-demo?tab=sources",
+                "",
+            ),
+            (
+                "double-slash",
+                "https://chatgpt.com/g//g-p-demo/project?tab=sources",
+                "",
+            ),
+            (
+                "trailing-slash",
+                "https://chatgpt.com/g/g-p-demo/project/?tab=sources",
+                "",
+            ),
+            (
+                "owned-sources",
+                "https://chatgpt.com/g/g-p-demo/project?tab=sources",
+                "other-owner",
+            ),
+        )
+        for label, url, owner in cases:
+            with self.subTest(label=label):
+                claim = acquire_browser_lease(
+                    self.repo,
+                    holder=f"bootstrap-sources-{label}",
+                    thread_id=f"bootstrap-sources-{label}-thread",
+                    expected_remote_project_id="g-p-demo",
+                    scope="project",
+                    bootstrap=True,
+                )
+                try:
+                    resolved = resolve_owned_tab(
+                        self.repo,
+                        claim_token=claim["token"],
+                        thread_id=f"bootstrap-sources-{label}-thread",
+                        browser_profile=claim["browser_profile"],
+                        expected_project_id="g-p-demo",
+                        pages=[{"page_id": 43, "url": url}],
+                        owners=[{"page_id": 43, "owner_token": owner}],
+                    )
+                    self.assertEqual(resolved["action"], "hold")
+                    self.assertEqual(resolved["reason"], "noncanonical-bootstrap-tab")
+                finally:
+                    release_browser_lease(self.repo, token=claim["token"])
+
 
 if __name__ == "__main__":
     unittest.main()

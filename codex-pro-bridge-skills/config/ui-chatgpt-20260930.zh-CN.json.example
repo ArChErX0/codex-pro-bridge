@@ -1,0 +1,18 @@
+{
+  "control_layout": "nested-slider",
+  "model": "[role=\"menuitemradio\"][aria-checked=\"true\"][data-model-selected=\"true\"]",
+  "thinking": "button[aria-label=\"选择 ChatGPT 模型\"] .truncate",
+  "thinking_menu_labels": ["选择 ChatGPT 模型"],
+  "model_menu_labels": ["选择模型"],
+  "thinking_slider": "[data-reasoning-slider] [role=\"slider\"]",
+  "thinking_keyboard_control": "[role=\"menuitem\"][data-reasoning-slider][aria-label=\"强度\"]",
+  "thinking_positions": {"极高": 3},
+  "account_menu_labels": ["打开个人资料菜单"],
+  "account": "[role=\"menu\"] [role=\"menuitem\"]:first-child",
+  "workspace": "[role=\"menu\"] [role=\"menuitem\"]:first-child",
+  "composer": "form [role=\"textbox\"][contenteditable=\"true\"]",
+  "attachment_chip": "form [class~=\"group/composer-attachment\"]",
+  "attachment_labels": ["添加文件等内容"],
+  "upload_labels": ["添加照片和文件 从电脑上传"],
+  "send_labels": ["发送"]
+}

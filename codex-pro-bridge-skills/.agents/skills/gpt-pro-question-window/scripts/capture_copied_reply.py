@@ -19,10 +19,57 @@ class CaptureError(RuntimeError):
     pass
 
 
+FENCE = re.compile(r"^\s*```")
+REFERENCE_DEFINITION = re.compile(r"^ {0,3}\[([^\]]*)\]:\s*\S", re.MULTILINE)
+INLINE_LINK = re.compile(r"(?<!!)\[[^\]]+\]\([^\n)]+\)")
+REFERENCE_USAGE = re.compile(r"(?<!!)\[([^\]]*)\]\[([^\]]*)\]")
+
+
+def link_count(text: str) -> int:
+    """Count rendered links, ignoring fenced code blocks.
+
+    ChatGPT's Copy reply emits inline links and full reference links
+    (``[text][id]``) whose ``[id]:`` definitions are appended after the
+    prose. Only a reference with a definition is a link, each usage counts
+    once, and the definition lines themselves are not usages.
+    """
+    visible = []
+    fenced = False
+    for line in text.splitlines():
+        if FENCE.match(line):
+            fenced = not fenced
+            visible.append("")
+        else:
+            visible.append("" if fenced else line)
+    body = "\n".join(visible)
+    defined = {label.strip().casefold() for label in REFERENCE_DEFINITION.findall(body)}
+    references = sum(
+        1
+        for label, identifier in REFERENCE_USAGE.findall(body)
+        if (identifier.strip() or label.strip()).casefold() in defined
+    )
+    return len(INLINE_LINK.findall(body)) + references
+
+
 def markdown_metrics(text: str) -> dict[str, int | str]:
     lines = text.splitlines()
-    table_count = 0
+    visible = []
+    fence = None
+    code_blocks = 0
     for line in lines:
+        marker = re.match(r"^\s{0,3}(`{3,}|~{3,})(.*)$", line)
+        if fence:
+            if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip():
+                fence = None
+            continue
+        if marker:
+            fence = marker[1]
+            code_blocks += 1
+            continue
+        visible.append(line)
+    body = "\n".join(visible)
+    table_count = 0
+    for line in visible:
         if "|" not in line:
             continue
         cells = line.strip().strip("|").split("|")
@@ -30,18 +77,17 @@ def markdown_metrics(text: str) -> dict[str, int | str]:
             re.fullmatch(r"\s*:?-{3,}:?\s*", cell) for cell in cells
         ):
             table_count += 1
-    fence_lines = sum(bool(re.match(r"^\s*```", line)) for line in lines)
-    display_delimiters = sum(line.strip() == "$$" for line in lines)
+    display_math = len(re.findall(r"\\\[[\s\S]*?\\\]", body)) + len(re.findall(r"\$\$[\s\S]*?\$\$", body))
     return {
         "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
         "characters": len(text),
         "lines": len(lines),
-        "headings": sum(bool(re.match(r"^#{1,6}\s+", line)) for line in lines),
-        "display_math": display_delimiters // 2,
-        "inline_math": len(re.findall(r"\\\(", text)),
+        "headings": sum(bool(re.match(r"^#{1,6}\s+", line)) for line in visible),
+        "display_math": display_math,
+        "inline_math": len(re.findall(r"\\\([\s\S]*?\\\)", body)),
         "tables": table_count,
-        "code_blocks": fence_lines // 2,
-        "links": len(re.findall(r"(?<!!)\[[^\]]+\]\([^\n)]+\)", text)),
+        "code_blocks": code_blocks,
+        "links": link_count(body),
     }
 
 
@@ -50,6 +96,7 @@ def read_windows_clipboard() -> str:
     if not executable:
         raise CaptureError("powershell.exe is unavailable; the Windows clipboard cannot be read")
     command = (
+        "$ErrorActionPreference='Stop'; "
         "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); "
         "$value=Get-Clipboard -Raw; "
         "if ($null -eq $value) { exit 3 }; "
@@ -63,6 +110,10 @@ def read_windows_clipboard() -> str:
     )
     if completed.returncode != 0:
         detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        # With terminating PowerShell errors, exit 3 without diagnostics is
+        # exclusively the explicit null-text branch, not a failed clipboard API.
+        if completed.returncode == 3 and not detail:
+            raise CaptureError("Windows clipboard is empty")
         raise CaptureError(
             f"Windows clipboard read failed with exit {completed.returncode}"
             + (f": {detail}" if detail else "")

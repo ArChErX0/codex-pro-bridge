@@ -110,7 +110,8 @@ await new Function('tools', 'text', 'return (async () => {' + prepared.output + 
 
 固定 turn 的完整回答已完成且无截断后，用原有 `save_bridge_turn.py`，增加
 `--attempt-id <attempt>`，同时传 `--web-url`、`--remote-turn-id`、实际
-`--response-completed-at` 和 `native-read-thread` / `browser-fallback` 路由。
+`--response-completed-at` 和 `native-read-thread` / `browser-fallback` 路由；显式页面原始序列化
+采用 [来源合同](bridge_protocol.md#页面原始序列化)，不能用 DOM 文本冒充原文。
 有 attempt 时，保存逻辑以该 attempt 的 preflight 中已验证的可见暂存文件名和
 SHA-256 为唯一附件 provenance；它不再把安全暂存名与源 bundle basename 比较。
 名称或 digest 漂移必须失败，不能降级为 `mismatch` 后继续写入成功记录。
@@ -119,6 +120,10 @@ SHA-256 为唯一附件 provenance；它不再把安全暂存名与源 bundle ba
 捕获先固定答案摘要，重试不会因观察时间变化生成第二份 exchange。
 文件与 canonical ledger 均写入后才标为 `captured`；不同 turn、不同答案或其他轮次的文件不能
 完成本轮检查点。之后另行记录 Codex verdict，不能把捕获等同于本地核验完成。
+
+持久 runtime 已有 captured attempt 时，status/result/resume 首先按完整 ledger 与 canonical raw/proof
+核验并只读返回，缺 envelope 仅在来源收据足够时恢复；不重新连接浏览器或 Send。
+`continuation=started` 仅证明同 job worker 启动，具体等待与失败语义见 [运行时合同](mcp_runtime.md)。
 
 重启时用 `status --attempt-id <attempt>` 读取状态，再走同一 owner 的 `resolve-tab` 和
 `check_browser_recovery.py`。已有未完检查点会被预检与恢复入口自动发现；不得另建 attempt 绕过它。

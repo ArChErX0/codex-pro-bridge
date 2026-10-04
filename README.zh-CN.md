@@ -2,6 +2,27 @@
 
 [English](README.md)
 
+## 本 fork 的增强
+
+基于 [WILLOSCAR/codex-pro-bridge](https://github.com/WILLOSCAR/codex-pro-bridge)，保留原有
+skills 工作流，并提供可选的持久 MCP 执行器。父代理冻结问题和材料后，worker 负责打包、
+上传、固定轮次等待和原文回收，父代理保留最终核验。
+
+- Windows 原生、WSL 配合 Windows Chrome 两种运行方式，使用可配置路径和摘要验证的暂存。
+- Project 首次发送、正式 conversation ID 绑定及独立标签页所有权；临时 `local-chatgpt:`
+  地址不会被当成服务器会话身份。
+- 持久 job/attempt 与原轮次恢复；发送结果未知时禁止自动重发，上传回执支持检查后续接。
+- 新旧 UI、中文/英文“最新”标签、独立菜单和嵌套滑块；只在实际不匹配时调整模型控件。
+- 每轮独立 snapshot、材料到 ZIP 的准确映射和可验证的打包收据；账本事务中断可恢复。
+- 可见 Copy 写入凭证、可选页面序列化及受严格身份校验的来源链接凭证；完成状态由实际
+  answer、turn、attempt 和账本共同核验。
+- 精简 skill 路由并合并部分重复浏览器读取；记录调用次数和阶段耗时，便于测量执行开销。
+
+配置从包内 `config/*.example` 开始；机器路径、浏览器账号、Project 身份和运行记录保留在
+本机私有配置中。入口与恢复约定见
+[持久 MCP 说明](codex-pro-bridge-skills/.agents/skills/gpt-pro-question-window/references/mcp_runtime.md)。
+来源链接凭证仅接受其已定义、已校验的布局；不支持的布局会返回具体失败原因。
+
 ## Introduction
 
 Codex Pro Bridge 面向在算法设计、研究推理和工程实现之间来回切换的工作。
@@ -83,7 +104,7 @@ Bridge 将浏览器状态作为明确协议处理，而不是尽力而为的 UI 
 | 禁止重复发送 | durable attempt 记录 preflight、`send-started`、Send 接收状态和固定 remote turn；未知发送结果只能恢复，不能重发 |
 | 无人值守恢复 | wait plan 与 continuation receipt 在运行时让出后继续沿用同一 attempt，不把本地超时误当成任务结束 |
 | 上传安全 | `devtools-upload/v1` 只允许一次附件控件点击、一次新菜单快照和直接 `upload_file`；chooser 状态未知时 fail closed |
-| 模型控件 | `model-controls/v1` 将模型与思考强度分开核验，支持“最新”等动态标签，并限制读取和调整次数 |
+| 模型控件 | `model-controls/v1/v2` 将模型与思考强度分开核验，支持“最新”等动态标签及嵌套滑块，并限制读取和调整次数 |
 | 准确回答捕获 | 固定 remote turn 并保留 Copy reply 的 Markdown 结构；纯文本回退会明确标为降级捕获 |
 | Project 切换 | 显式 rebind 会归档旧 Sources manifest，任何变更前必须重新取得完整远端 inventory |
 | 确定性交接 | `executor_handoff/v2` 在浏览器工作前冻结问题、证据策略、目标、授权、模型控件、输出位置和摘要 |

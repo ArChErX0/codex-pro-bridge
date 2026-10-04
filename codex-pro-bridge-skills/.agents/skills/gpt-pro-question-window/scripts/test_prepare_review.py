@@ -11,6 +11,8 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).with_name("prepare_review.py")
 BUILDER = SCRIPT.resolve().parents[2] / "bundle-algorithm-context/scripts/build_algorithm_bundle.py"
+sys.path.insert(0, str(BUILDER.parent))
+from build_algorithm_bundle import is_candidate  # noqa: E402
 
 
 class PrepareReviewTests(unittest.TestCase):
@@ -60,9 +62,136 @@ class PrepareReviewTests(unittest.TestCase):
         self.request["files"] = [".env"]
         result, data = self.call("--stage")
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(data["phase"], "build")
+        self.assertEqual(data["phase"], "request")
         self.assertFalse(data["ready"])
         self.assertNotIn("staging", data)
+
+    def test_explicit_frozen_input_raises_threshold_to_actual_largest_file(self):
+        content = b"x" * 250_001
+        (self.root / "evidence.md").write_bytes(content)
+        result, data = self.call()
+        self.assertEqual(result.returncode, 0, data)
+        with zipfile.ZipFile(data["bundle"]) as archive:
+            self.assertEqual(archive.read("source/evidence.md"), content)
+
+    def test_explicit_fv_schemes_and_tsv_members_are_packed_with_digests(self):
+        (self.root / "case" / "system").mkdir(parents=True)
+        (self.root / "receipts").mkdir()
+        fv_schemes = b"FoamFile\n{ format ascii; object fvSchemes; }\n"
+        tsv = b"rank\tglobalCell\tfluxNet\n3\t356\t0\n"
+        (self.root / "case" / "system" / "fvSchemes").write_bytes(fv_schemes)
+        (self.root / "receipts" / "phase.tsv").write_bytes(tsv)
+        self.request["files"] = ["case/system/fvSchemes", "receipts/phase.tsv"]
+        result, data = self.call()
+        self.assertEqual(result.returncode, 0, data)
+        mapping = json.loads(Path(data["materials_file"]).read_text())
+        with zipfile.ZipFile(data["bundle"]) as archive:
+            self.assertEqual(sum(name.startswith("source/") for name in archive.namelist()), 2)
+            for item in mapping["materials"]:
+                source = self.root / item["source_path"]
+                packed = archive.read(item["archive_path"])
+                self.assertEqual(packed, source.read_bytes())
+                self.assertEqual(hashlib.sha256(packed).hexdigest(), item["sha256"])
+        self.assertEqual(mapping["bundle_sha256"], data["bundle_sha256"])
+
+    def test_auto_context_keeps_extended_text_types_out_of_global_candidates(self):
+        (self.root / "case" / "system").mkdir(parents=True)
+        (self.root / "case" / "system" / "fvSchemes").write_text("object fvSchemes;\n")
+        (self.root / "phase.tsv").write_text("rank\tvalue\n0\t1\n")
+        self.request["context_policy"] = "auto"
+        self.request["max_files"] = 4
+        self.request["files"] = ["case/system/fvSchemes", "phase.tsv"]
+        result, data = self.call()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(data["phase"], "request")
+        self.assertIn("Explicit evidence path is excluded by the safety policy", data["error"])
+
+    def test_extended_candidate_requires_explicit_in_repo_path(self):
+        (self.root / "phase.tsv").write_text("rank\tvalue\n0\t1\n")
+        path = self.root / "phase.tsv"
+        self.assertFalse(is_candidate(path, self.root, True))
+        self.assertTrue(is_candidate(path, self.root, True, explicit_paths=[path]))
+        with tempfile.TemporaryDirectory() as external_dir:
+            external = Path(external_dir) / "external-phase.tsv"
+            external.write_text("rank\tvalue\n0\t1\n")
+            self.assertFalse(is_candidate(external, self.root, True, explicit_paths=[external]))
+
+    def test_explicit_extended_admission_rejects_nontext_nul_secret_and_arbitrary_names(self):
+        cases = [
+            ("plain", b"extensionless but not an OpenFOAM dictionary\n", "excluded"),
+            ("bad.tsv", b"\xff\xfe", "excluded"),
+            ("nul.tsv", b"header\x00value\n", "excluded"),
+            ("credentials.tsv", b"rank\tvalue\n0\t1\n", "excluded"),
+            ("secret.tsv", b"-----BEGIN RSA PRIVATE KEY-----\n", "High-confidence"),
+        ]
+        for name, content, expected in cases:
+            with self.subTest(name=name):
+                path = self.root / name
+                path.write_bytes(content)
+                self.request["files"] = [name]
+                result, data = self.call()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(expected, data["error"])
+        target = self.root / "phase.tsv"
+        target.write_text("rank\tvalue\n0\t1\n")
+        link = self.root / "link.tsv"
+        link.symlink_to(target)
+        self.request["files"] = ["link.tsv"]
+        result, data = self.call()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("regular non-symlink", data["error"])
+
+    def test_frozen_sixty_member_explicit_zip_preserves_every_source_digest(self):
+        files = []
+        for index in range(58):
+            relative = f"evidence/{index:02d}.md"
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"evidence {index}\n")
+            files.append(relative)
+        (self.root / "case" / "system").mkdir(parents=True)
+        (self.root / "case" / "system" / "fvSchemes").write_text("object fvSchemes;\n")
+        (self.root / "receipts.tsv").write_text("rank\tvalue\n0\t1\n")
+        files.extend(["case/system/fvSchemes", "receipts.tsv"])
+        self.assertEqual(len(files), 60)
+        self.request["files"] = files
+        result, data = self.call()
+        self.assertEqual(result.returncode, 0, data)
+        mapping = json.loads(Path(data["materials_file"]).read_text())
+        self.assertEqual(len(mapping["materials"]), 61)  # notes plus 60 evidence files
+        with zipfile.ZipFile(data["bundle"]) as archive:
+            source_members = [name for name in archive.namelist() if name.startswith("source/")]
+            self.assertEqual(len(source_members), 60)
+            for item in mapping["materials"]:
+                source = self.root / item["source_path"]
+                packed = archive.read(item["archive_path"])
+                self.assertEqual(packed, source.read_bytes())
+                self.assertEqual(hashlib.sha256(packed).hexdigest(), item["sha256"])
+
+    def test_declared_paths_and_input_hash_drift_are_rejected(self):
+        self.request["file_digests"] = {
+            "facts.md": hashlib.sha256((self.root / "facts.md").read_bytes()).hexdigest(),
+            "evidence.md": hashlib.sha256((self.root / "evidence.md").read_bytes()).hexdigest(),
+        }
+        result, data = self.call()
+        self.assertEqual(result.returncode, 0, data)
+        (self.root / "evidence.md").write_text("changed after freeze\n")
+        result, data = self.call()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("file drift detected", data["error"])
+        self.request["file_digests"] = {"facts.md": self.request["file_digests"]["facts.md"]}
+        result, data = self.call()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("file_digests must cover exactly notes and files", data["error"])
+
+    def test_auto_context_keeps_builder_default_size_threshold(self):
+        (self.root / "evidence.md").write_bytes(b"x" * 250_001)
+        self.request["context_policy"] = "auto"
+        self.request["max_files"] = 3
+        result, data = self.call()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(data["phase"], "build")
+        self.assertIn("over size threshold", data["error"])
 
     def test_prompt_uses_verified_archive_paths_for_notes_and_evidence(self):
         self.request["question"] = "请先阅读facts.md，再读 `evidence.md`。不要更改科学判断。"
@@ -117,14 +246,14 @@ class PrepareReviewTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(file.read_bytes(), b"original evidence")
 
-    def test_stage_failure_keeps_verified_bundle(self):
+    def test_invalid_stage_host_is_rejected_before_bundle(self):
         env = {**os.environ, "CODEX_BRIDGE_STAGING_WSL_ROOT": str(self.root / "missing")}
         result, data = self.call("--stage", env=env)
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(data["phase"], "stage")
+        self.assertEqual(data["phase"], "request")
         self.assertFalse(data["sent"])
-        with zipfile.ZipFile(data["bundle"]) as archive:
-            self.assertIsNone(archive.testzip())
+        self.assertNotIn("bundle", data)
+        self.assertFalse((self.root / ".codex" / "codex-pro-bridge" / "bundles").exists())
 
     def test_successful_stage_uses_matching_bundle(self):
         stage = self.root / "stage"
@@ -158,7 +287,12 @@ class PrepareReviewTests(unittest.TestCase):
         self.request["context_policy"] = "none"
         self.request["max_files"] = 0
         self.request["files"] = []
-        result, data = self.call("--stage")
+        stage = self.root / "stage"
+        stage.mkdir()
+        env = {**os.environ, "CODEX_BRIDGE_STAGING_WSL_ROOT": str(stage),
+               "CODEX_BRIDGE_STAGING_WINDOWS_ROOT": "C:\\BridgeStaging",
+               "CODEX_BRIDGE_STAGING_LOCK": str(self.root / "staging.lock")}
+        result, data = self.call("--stage", env=env)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(data["phase"], "request")
         self.assertIn("no browser attachment", data["error"])

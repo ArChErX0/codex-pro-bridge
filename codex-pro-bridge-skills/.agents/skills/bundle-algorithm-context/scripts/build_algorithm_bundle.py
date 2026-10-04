@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import glob
 import hashlib
 import os
@@ -28,7 +29,6 @@ from bridge_store import (  # noqa: E402
     is_within,
     now_iso,
     parse_metadata,
-    repo_relative,
     require_new_output,
     timestamp_slug,
     validate_id,
@@ -41,6 +41,7 @@ from evidence_safety import (  # noqa: E402
 )
 from evidence_graph import dependency_closure  # noqa: E402
 from project_store import BridgeProjectStore  # noqa: E402
+from material_prompt import CODEX_NOTES_ARCHIVE_PATH, README_ARCHIVE_PATH, archive_name  # noqa: E402
 
 
 DEFAULT_INCLUDE_EXTS = {
@@ -51,8 +52,6 @@ DEFAULT_INCLUDE_EXTS = {
     ".scala", ".kt", ".cpp", ".cc", ".c", ".h", ".hpp", ".cu", ".m", ".mm",
     ".swift", ".r", ".jl", ".log",
 }
-CODEX_NOTES_ARCHIVE_PATH = "context/codex-session-notes.md"
-README_ARCHIVE_PATH = "README_FOR_GPT_PRO.md"
 STATIC_OR_BINARY_EXTS = {
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf", ".zip", ".tar",
     ".gz", ".bz2", ".xz", ".7z", ".mp4", ".mov", ".avi", ".mp3", ".wav",
@@ -166,7 +165,34 @@ def walk_files(root: Path) -> List[Path]:
     return files
 
 
-def is_candidate(path: Path, root: Path, include_logs: bool) -> bool:
+def _strict_text_file(path: Path) -> bool:
+    """Accept only regular, NUL-free, strictly UTF-8 text for explicit extras."""
+    if not path.is_file() or path.is_symlink():
+        return False
+    decoder = codecs.getincrementaldecoder("utf-8")("strict")
+    try:
+        with path.open("rb") as handle:
+            while True:
+                chunk = handle.read(64 * 1024)
+                if not chunk:
+                    break
+                if b"\x00" in chunk:
+                    return False
+                decoder.decode(chunk)
+            decoder.decode(b"", final=True)
+    except (OSError, UnicodeDecodeError):
+        return False
+    return True
+
+
+def is_candidate(
+    path: Path,
+    root: Path,
+    include_logs: bool,
+    *,
+    explicit_paths: Sequence[Path] = (),
+) -> bool:
+    """Classify one candidate while keeping extended types explicit-only."""
     if is_excluded_by_name(path, root):
         return False
     extension = path.suffix.lower()
@@ -174,9 +200,16 @@ def is_candidate(path: Path, root: Path, include_logs: bool) -> bool:
         return False
     if extension == ".log" and not include_logs:
         return False
-    return extension in DEFAULT_INCLUDE_EXTS or path.name in {
+    if extension in DEFAULT_INCLUDE_EXTS or path.name in {
         "README", "AGENTS", "Makefile", "Dockerfile"
-    }
+    }:
+        return True
+    declared = {Path(value).resolve() for value in explicit_paths}
+    if path.resolve() not in declared or not is_within(path, root):
+        return False
+    if path.name != "fvSchemes" and extension != ".tsv":
+        return False
+    return _strict_text_file(path)
 
 
 def file_size(path: Path) -> int:
@@ -349,6 +382,7 @@ def filter_files(
     max_files: int,
     skip_files_over_bytes: int,
     allow_external: bool = False,
+    explicit_paths: Sequence[Path] = (),
 ) -> Tuple[List[Path], List[Tuple[str, str]]]:
     selected: List[Path] = []
     omitted: List[Tuple[str, str]] = []
@@ -358,7 +392,12 @@ def filter_files(
             omitted.append((label, "resolved path escapes repository root"))
         elif not path.is_file():
             omitted.append((label, "not a file"))
-        elif not is_candidate(path, root, include_logs):
+        elif not is_candidate(
+            path,
+            root,
+            include_logs,
+            explicit_paths=explicit_paths,
+        ):
             omitted.append((label, "excluded by path, name, extension, or binary policy"))
         elif skip_files_over_bytes > 0 and file_size(path) > skip_files_over_bytes:
             omitted.append((label, f"over size threshold ({file_size(path)} bytes)"))
@@ -377,13 +416,6 @@ def markdown_code_fence(path: Path, content: str) -> str:
     }.get(extension, extension)
     escaped_content = content.replace("```", "``\u200b`")
     return f"```{language}\n{escaped_content}\n```"
-
-
-def archive_name(path: Path, root: Path) -> str:
-    if is_within(path, root):
-        return f"source/{path.resolve().relative_to(root.resolve()).as_posix()}"
-    fingerprint = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:10]
-    return f"source/external/{fingerprint}-{path.name}"
 
 
 def extra_notes_archive_names(paths: Sequence[Path]) -> List[Tuple[Path, str]]:
@@ -560,7 +592,8 @@ def main() -> int:
         if not is_within(notes_path, root):
             raise BridgeError("Codex session notes must stay under the repository root")
         canonical_notes_root = bridge_dir / "codex-sessions"
-        if not is_within(notes_path, canonical_notes_root) and is_excluded_by_name(notes_path, root):
+        if (is_excluded_by_name(notes_path, canonical_notes_root) if is_within(notes_path, canonical_notes_root)
+                else is_excluded_by_name(notes_path, root)):
             raise BridgeError("Codex session notes path is excluded by the safety policy")
         if not notes_path.is_file() and not args.allow_missing_codex_session_notes:
             raise BridgeError(
@@ -592,6 +625,7 @@ def main() -> int:
                 max_files=args.max_files,
                 skip_files_over_bytes=args.skip_files_over_bytes,
                 allow_external=args.allow_external_include,
+                explicit_paths=include_paths,
             )
             if filtered and not args.allow_missing_includes:
                 details = "; ".join(f"{label}: {reason}" for label, reason in filtered)
@@ -654,7 +688,8 @@ def main() -> int:
         unsafe_extra_notes = [
             display_path(path, root)
             for path in extra_notes
-            if (not is_within(path, bridge_dir) and is_excluded_by_name(path, root))
+            if (is_excluded_by_name(path, canonical_notes_root) if is_within(path, canonical_notes_root)
+                else is_excluded_by_name(path, root))
             or file_size(path) > args.skip_files_over_bytes
         ]
         if unsafe_extra_notes:
