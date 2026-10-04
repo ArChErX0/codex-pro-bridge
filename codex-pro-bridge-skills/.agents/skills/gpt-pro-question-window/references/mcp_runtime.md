@@ -70,6 +70,11 @@ canonical claim、传完整 pages/owners resolver、确认空 composer/零附件
 
 ## 安装与配置
 
+推荐先按包内 `docs/INSTALL.md` 运行 `install.sh --setup --repo PATH` 或 Windows
+`install.ps1 -Setup -Repo PATH`。统一 setup 注册 MCP、生成私有主机配置并备份旧文件；
+`doctor --connect` 通过前，setup 创建的 runtime 禁止提交。检查只观察，不上传或 Send。
+setup 用 Python 3.11+，下述 worker 仍兼容 3.10+。手动部署路线仍然可用。
+
 入口：`scripts/bridge_mcp.py --config <private-runtime.json>`，Python 3.10+，运行时只依赖标准库。
 将包内 `config/bridge-runtime.json.example` 复制到私有位置，填写绝对状态目录、授权仓库根目录、
 浏览器 MCP argv 和基于实际观察的 UI profile。不把这些主机值提交到仓库。

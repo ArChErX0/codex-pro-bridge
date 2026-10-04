@@ -4,7 +4,9 @@ __pycache__/
 .codex/
 /docs/
 /CONTEXT.md
-/codex-pro-bridge-skills/tests/
+/codex-pro-bridge-skills/tests/*
+!/codex-pro-bridge-skills/tests/test_setup_bridge.py
+!/codex-pro-bridge-skills/tests/test_setup_intensities.py
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

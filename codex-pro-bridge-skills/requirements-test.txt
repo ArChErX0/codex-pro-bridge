@@ -1,0 +1,2 @@
+# Test-only dependency; setup and Bridge runtime use the Python standard library.
+jsonschema>=3.2,<5

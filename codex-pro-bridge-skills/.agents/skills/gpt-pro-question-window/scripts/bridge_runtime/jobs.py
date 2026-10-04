@@ -119,6 +119,8 @@ class Jobs:
         return self.root / job_id
 
     def submit(self, handoff_path, handoff_sha256):
+        if self.config.get("setup_ui_verified") is False:
+            raise BridgeError("Installed UI profile is not verified; run setup_bridge.py doctor --connect before submitting")
         h, _ = validate_inputs(handoff_path, handoff_sha256, self.config)
         if h["mode"] != "prepare-and-run":
             raise BridgeError("Submit requires a new v2 handoff; recover existing runtime jobs with bridge_resume")

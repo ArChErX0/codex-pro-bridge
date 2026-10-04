@@ -213,6 +213,27 @@ For a small local bug, formatting change, or straightforward implementation task
 
 ## Quick start
 
+### Recommended: agent-driven setup and readiness
+
+Read [INSTALL.md](codex-pro-bridge-skills/docs/INSTALL.md). With Python 3.11+,
+Node 22.12+ or 24 LTS on the browser host, and an explicitly authorized repository:
+
+```bash
+# WSL Codex + Windows Chrome
+./codex-pro-bridge-skills/install.sh --setup --repo /path/to/repo --topology wsl-windows
+```
+
+```powershell
+# Windows-native
+.\codex-pro-bridge-skills\install.ps1 -Setup -Repo "C:\work\my-project"
+```
+
+Setup backs up existing skills/config, installs pinned Chrome MCP, generates private
+host/runtime configuration, registers Bridge MCP, and verifies the actual browser UI.
+No Luna model or personal machine paths are required. Complete Chrome authorization
+and ChatGPT login, then reload Codex after doctor returns `ready`. Readiness is not a
+Send/upload test: unknown layouts and configuration conflicts explicitly block.
+
 ### Prerequisites
 
 Before using the bridge for the first time:
@@ -230,6 +251,7 @@ Repository and compute work may run through SSH while the Bridge controls local 
 Global installation:
 
 ```bash
+# Skills only; use --setup above for MCP configuration and readiness checks.
 ./codex-pro-bridge-skills/install.sh --global
 ```
 

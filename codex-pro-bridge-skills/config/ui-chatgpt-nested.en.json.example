@@ -1,0 +1,19 @@
+{
+  "control_layout": "nested-slider",
+  "thinking_label_location": "outer-menu",
+  "model": "[role=\"menuitemradio\"][aria-checked=\"true\"][data-model-selected=\"true\"]",
+  "thinking": "[role=\"menuitem\"][aria-label^=\"Select model\"]",
+  "thinking_menu_labels": ["Select ChatGPT model"],
+  "model_menu_labels": ["Select model"],
+  "thinking_slider": "[data-reasoning-slider] [role=\"slider\"]",
+  "thinking_keyboard_control": "[role=\"menuitem\"][data-reasoning-slider]",
+  "thinking_positions": {"__current_observation__": 0},
+  "account_menu_labels": ["Open profile menu"],
+  "account": "[role=\"menu\"] [role=\"menuitem\"]:first-child",
+  "workspace": "[role=\"menu\"] [role=\"menuitem\"]:first-child",
+  "composer": "form [role=\"textbox\"][contenteditable=\"true\"]",
+  "attachment_chip": "form [class~=\"group/composer-attachment\"]",
+  "attachment_labels": ["Add files and more"],
+  "upload_labels": ["Add photos & files Upload from computer", "Upload from computer"],
+  "send_labels": ["Send", "Send prompt"]
+}

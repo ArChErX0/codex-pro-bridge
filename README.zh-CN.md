@@ -214,6 +214,26 @@ Follow-up 通常只复用当前 Codex notes 和精简任务历史。只有文件
 
 ## 快速开始
 
+### 推荐：让 agent 完成安装与就绪检查
+
+读取 [安装说明](codex-pro-bridge-skills/docs/INSTALL.md)，准备 Python 3.11+、浏览器主机上的
+Node 22.12+ 或 24 LTS，以及一个明确授权的工作仓库。clone 本仓库后：
+
+```bash
+# WSL Codex + Windows Chrome
+./codex-pro-bridge-skills/install.sh --setup --repo /path/to/repo --topology wsl-windows
+```
+
+```powershell
+# Windows 原生
+.\codex-pro-bridge-skills\install.ps1 -Setup -Repo "C:\work\my-project"
+```
+
+安装器会备份旧 skills/config，安装固定版 Chrome MCP，生成私有配置并注册 Bridge MCP，
+随后检查真实浏览器。不依赖 Luna 模型或个人机器路径。用户仅需完成 Chrome 调试授权和
+ChatGPT 登录；返回 `ready` 后重载 Codex，即可授权正式问题。`ready` 是环境与 UI 就绪，
+不是已经上传或发送；未知界面或配置冲突会明确阻断，而不是宣称安装成功即可使用。
+
 ### 使用前准备
 
 第一次使用 Bridge 前：
@@ -227,6 +247,8 @@ Follow-up 通常只复用当前 Codex notes 和精简任务历史。只有文件
 仓库和计算任务可以通过 SSH 在远端运行，同时由本地 Bridge 控制本地 Chrome；上传前应将获准的 bundle 落到本机并核对摘要。运行在 SSH 远端的 Codex 不会自动继承本机 Chrome 会话，除非显式配置了安全的浏览器连接，否则应由本地 Bridge dispatcher 负责浏览器步骤。
 
 ### 安装
+
+以下为兼容保留的 **skills-only 安装**，不会自动注册 MCP；完整安装使用上面的 `--setup`：
 
 全局安装：
 
@@ -270,7 +292,8 @@ SHA-256 校验的可选暂存拓扑。仓库中的示例只记录环境变量名
 填写私有配置；[示例](codex-pro-bridge-skills/config/bridge-runtime.json.example) 不含个人路径。
 Windows 原生使用 Windows Python、Node 和路径；WSL 路线使用 WSL Python 与 Windows MCP/Chrome，
 暂存映射仍按上述主机拓扑配置。两种方式均需自己的实际 UI profile、Chrome 登录与调试授权，
-安装器不会自动启用 MCP 或覆盖用户配置。当前适配器要求 DevTools 工具支持显式 `pageId`。
+skills-only 安装器不会自动启用 MCP；统一 setup 会以备份和独立 managed block 注册 MCP。
+当前适配器要求 DevTools 工具支持显式 `pageId`，setup doctor 会验证实际工具 schema。
 
 ### 提一个普通问题
 

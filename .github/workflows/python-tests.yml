@@ -23,6 +23,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Install test dependencies
+        run: python -m pip install -r codex-pro-bridge-skills/requirements-test.txt
       - name: Run unit tests
         working-directory: codex-pro-bridge-skills
         run: |
@@ -33,7 +35,7 @@ jobs:
       - name: Compile Python sources
         working-directory: codex-pro-bridge-skills
         shell: bash
-        run: python -m compileall -q .agents/skills tests
+        run: python -m compileall -q .agents/skills tests setup_bridge.py
       - name: Smoke-test the PowerShell installer
         if: runner.os == 'Windows'
         shell: pwsh

@@ -1,8 +1,8 @@
 name = "bridge_executor"
 description = "Execute one frozen Codex Pro Bridge round from bundle preparation through exact browser capture and cleanup."
-model = "gpt-5.6-luna"
+# 默认继承父代理的可用模型；确认账号权限后才显式指定 model。
 model_reasoning_effort = "high"
-service_tier = "fast"
+# 可选 service_tier 必须由用户运行时和账号支持。
 
 developer_instructions = """
 You are the specialized Codex Pro Bridge Executor. You execute one already-authorized,

@@ -1,65 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$ROOT_DIR/.agents/skills"
-
-usage() {
-  echo "Usage: $0 --global | --repo /path/to/repo" >&2
-  exit 2
-}
-
-case "${1:-}" in
-  --global)
-    [[ $# -eq 1 ]] || usage
-    DST_DIR="${CODEX_HOME:-$HOME/.codex}/skills"
-    ;;
-  --repo)
-    [[ $# -eq 2 ]] || usage
-    [[ -d "$2" ]] || { echo "Repository directory does not exist: $2" >&2; exit 2; }
-    REPO_ROOT="$(cd "$2" && pwd)"
-    DST_DIR="$REPO_ROOT/.agents/skills"
-    ;;
-  *) usage ;;
-esac
-
-[[ -d "$SRC_DIR" ]] || { echo "Missing source skills directory: $SRC_DIR" >&2; exit 2; }
-mkdir -p "$DST_DIR"
-STAGE_DIR="$(mktemp -d "$DST_DIR/.codex-pro-bridge-install.XXXXXX")"
-trap 'rm -rf "$STAGE_DIR"' EXIT
-
-managed=()
-for source_path in "$SRC_DIR"/* "$SRC_DIR"/.shared; do
-  [[ -e "$source_path" ]] || continue
-  name="$(basename "$source_path")"
-  managed+=("$name")
-  cp -R "$source_path" "$STAGE_DIR/$name"
-  find "$STAGE_DIR/$name" -type d -name __pycache__ -prune -exec rm -rf {} +
-  find "$STAGE_DIR/$name" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
-done
-
-for name in "${managed[@]}"; do
-  case "$name" in
-    .shared|bundle-algorithm-context|coordinate-auto-research|experiment-plan-generator|gpt-pro-algorithm-pipeline|gpt-pro-paper-brainstormer|gpt-pro-project-workspace|gpt-pro-question-window|gpt-pro-research-algorithm-reviewer|gpt-pro-review-probe|implementation-consistency-checker) ;;
-    *) echo "Refusing unexpected managed entry: $name" >&2; exit 2 ;;
-  esac
-  rm -rf "$DST_DIR/$name"
-  mv "$STAGE_DIR/$name" "$DST_DIR/$name"
-done
-
-rmdir "$STAGE_DIR"
-trap - EXIT
-printf 'Installed %s\n' "${managed[@]}"
-echo "Destination: $DST_DIR"
-if [[ -n "${REPO_ROOT:-}" ]] && git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
-  GIT_DIR="$(git -C "$REPO_ROOT" rev-parse --git-dir)"
-  [[ "$GIT_DIR" = /* ]] || GIT_DIR="$REPO_ROOT/$GIT_DIR"
-  EXCLUDE_FILE="$GIT_DIR/info/exclude"
-  mkdir -p "$(dirname "$EXCLUDE_FILE")"
-  touch "$EXCLUDE_FILE"
-  for pattern in .agents/ .codex/; do
-    grep -Fqx "$pattern" "$EXCLUDE_FILE" || echo "$pattern" >> "$EXCLUDE_FILE"
+PACKAGE_ROOT="$(cd "$(dirname "$0")" && pwd)"
+bridge_python="${BRIDGE_PYTHON:-}"
+if [[ -z "$bridge_python" ]]; then
+  for candidate in python3.13 python3.12 python3.11 python3; do
+    if command -v "$candidate" >/dev/null && "$candidate" -c 'import sys; sys.exit(sys.version_info < (3, 10))' >/dev/null 2>&1; then
+      bridge_python="$candidate"
+      break
+    fi
   done
-  echo "Local Git exclude updated for .agents/ and .codex/."
 fi
-echo "Restart Codex if the updated skills do not appear in an existing session."
+[[ -n "$bridge_python" ]] || { echo 'Python is missing; full setup needs 3.11+, skills-only needs 3.10+.' >&2; exit 2; }
+case "${1:-}" in
+  --setup) shift; exec "$bridge_python" "$PACKAGE_ROOT/setup_bridge.py" install "$@" ;;
+  --global) shift; exec "$bridge_python" "$PACKAGE_ROOT/setup_bridge.py" skills "$@" ;;
+  --repo) shift; exec "$bridge_python" "$PACKAGE_ROOT/setup_bridge.py" skills --repo-local --repo "$@" ;;
+  *) echo 'Usage: install.sh --setup --repo PATH [setup options] | --global | --repo PATH' >&2; exit 2 ;;
+esac
